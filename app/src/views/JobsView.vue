@@ -383,14 +383,14 @@ onMounted(refresh);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="JD 预览" min-width="520" cell-class-name="jd-prev-cell">
+        <el-table-column label="JD 预览" min-width="420" cell-class-name="jd-prev-cell">
           <template #default="{ row }">
             <div class="jd-prev">
               {{ row.jd_text || "（暂无 JD 文本）" }}
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="140">
           <template #default="{ row }">
             <el-button
               link
@@ -481,6 +481,7 @@ onMounted(refresh);
   white-space: pre-wrap;
   padding-right: 16px;
   box-sizing: border-box;
+  /* 末尾自然用 … 截断（-webkit-box 模式下最后一行末尾会自动 …） */
 }
 /* 让 JD 列的 td 上下 padding 大一点、top 对齐 */
 .job-table :deep(td.jd-prev-cell),

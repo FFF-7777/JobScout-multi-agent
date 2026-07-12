@@ -362,35 +362,36 @@ onMounted(refresh);
         :row-style="{ cursor: 'pointer' }"
       >
         <el-table-column type="selection" width="48" />
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="company_name" label="公司" min-width="140">
+        <el-table-column prop="id" label="ID" width="56" />
+        <el-table-column prop="company_name" label="公司" min-width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ row.company_name || "（待解析）" }}</template>
         </el-table-column>
-        <el-table-column prop="job_title" label="岗位" min-width="160">
+        <el-table-column prop="job_title" label="岗位" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ row.job_title || "（待解析）" }}</template>
         </el-table-column>
-        <el-table-column prop="city" label="城市" width="90" />
-        <el-table-column prop="salary" label="薪资" width="110" />
-        <el-table-column prop="source" label="来源" width="90" />
-        <el-table-column label="分析模式" width="100">
+        <el-table-column prop="city" label="城市" width="80" show-overflow-tooltip />
+        <el-table-column prop="salary" label="薪资" width="100" show-overflow-tooltip />
+        <el-table-column prop="source" label="来源" width="80" show-overflow-tooltip />
+        <el-table-column label="模式" width="68" align="center">
           <template #default="{ row }">
             <el-tag
               size="small"
               :type="(row.analyze_mode || 'summary') === 'full' ? 'warning' : 'info'"
-              effect="light"
+              effect="plain"
+              style="padding: 0 4px"
             >
-              {{ (row.analyze_mode || "summary") === "full" ? "全文" : "精简" }}
+              {{ (row.analyze_mode || "summary") === "full" ? "全文" : "精" }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="JD 预览" min-width="420" cell-class-name="jd-prev-cell">
+        <el-table-column label="JD 预览" min-width="380" cell-class-name="jd-prev-cell">
           <template #default="{ row }">
             <div class="jd-prev">
               {{ row.jd_text || "（暂无 JD 文本）" }}
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140">
+        <el-table-column label="操作" width="120" align="center">
           <template #default="{ row }">
             <el-button
               link

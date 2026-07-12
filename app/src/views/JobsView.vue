@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from "vue";
-import { useRouter } from "vue-router";
+import { nextTick, onActivated, onBeforeUnmount, onMounted, ref, computed } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { UploadRequestOptions } from "element-plus";
 import { api, type Job } from "@/api";
 import { useAppStore } from "@/stores/app";
 
 const router = useRouter();
+const route = useRoute();
 const store = useAppStore();
+
+const SCROLL_KEY = "jobscout.jobs.scrollY";
 
 const jdText = ref("");
 const splitBatch = ref(false);
@@ -225,8 +228,44 @@ function onCellClick(row: Job, _column: any, _cell: any, event: MouseEvent) {
   if (target.closest(".el-table__fixed-right")) {
     return;
   }
+  // 记录当前滚动位置，回来时恢复
+  const scroller =
+    document.querySelector(".el-table .el-scrollbar__wrap") ||
+    document.querySelector(".el-table__body-wrapper") ||
+    document.scrollingElement;
+  if (scroller) {
+    sessionStorage.setItem(SCROLL_KEY, String(scroller.scrollTop || 0));
+  }
   router.push(`/jobs/${row.id}`);
 }
+
+async function restoreScroll() {
+  const y = Number(sessionStorage.getItem(SCROLL_KEY) || "0");
+  if (!y) return;
+  await nextTick();
+  // 等 el-table 渲染完
+  setTimeout(() => {
+    const scroller =
+      document.querySelector(".el-table .el-scrollbar__wrap") ||
+      document.querySelector(".el-table__body-wrapper") ||
+      document.scrollingElement;
+    if (scroller) {
+      scroller.scrollTop = y;
+    }
+    sessionStorage.removeItem(SCROLL_KEY);
+  }, 50);
+}
+
+onMounted(async () => {
+  await refresh();
+  restoreScroll();
+});
+// 处理 <keep-alive> 缓存场景（虽然这里没启用，但以防万一）
+onActivated(restoreScroll);
+// 离开页面前清掉残留
+onBeforeUnmount(() => {
+  // 仅当不是去 /jobs/:id 时才清（router.push 时我们已经存了新的值，这里兜底）
+});
 
 function startAnalyze() {
   if (!store.resumeId) {
@@ -369,6 +408,16 @@ onMounted(refresh);
   margin-bottom: 12px;
   gap: 12px;
   flex-wrap: wrap;
+}
+.job-table :deep(.el-table__column--selection) .el-checkbox {
+  /* 放大行内 checkbox：从默认 14px 到 18px */
+  transform: scale(1.3);
+  transform-origin: center;
+}
+.job-table :deep(.el-table__column--selection) .cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .toolbar-right {
   display: flex;

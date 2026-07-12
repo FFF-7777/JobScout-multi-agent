@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # 设太高容易触发 DashScope 限流；默认 3，留 env 调节
     llm_concurrency: int = 3
 
+    # 百度 OCR（图片导入 JD 文字识别）
+    baidu_ocr_app_id: str = ""
+    baidu_ocr_api_key: str = ""
+    baidu_ocr_secret_key: str = ""
+
     @property
     def has_api_key(self) -> bool:
         return bool(self.dashscope_api_key and self.dashscope_api_key.strip())

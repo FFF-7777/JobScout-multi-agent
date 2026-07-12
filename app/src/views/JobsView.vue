@@ -126,6 +126,29 @@ async function importUrl() {
   }
 }
 
+async function importImages(uploadedFiles: File[]) {
+  if (!uploadedFiles.length) return;
+  loading.value = true;
+  try {
+    const r = await api.importJobImages(uploadedFiles);
+    if (r.length === uploadedFiles.length) {
+      ElMessage.success(`成功识别导入 ${r.length} 个岗位`);
+    } else {
+      ElMessage.warning(`成功 ${r.length}/${uploadedFiles.length} 个（部分图片识别失败）`);
+    }
+    await refresh();
+  } catch (e: any) {
+    const detail = e?.response?.data?.detail || e?.message || "图片识别失败";
+    ElMessage.error(detail);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// 拖拽/多选时 el-upload 会逐个触发 http-request，
+// 改用 before-upload 收集文件 + 手动按钮触发
+const pendingImageFiles = ref<File[]>([]);
+
 async function reanalyzeOne(job: Job) {
   analyzingIds.value.add(job.id);
   try {
@@ -300,9 +323,30 @@ onMounted(refresh);
       <div style="margin-top: 12px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap">
         <el-checkbox v-model="splitBatch">按分隔线 / 空行拆分为多个岗位</el-checkbox>
         <el-button type="primary" :loading="loading" @click="importText">导入 JD</el-button>
-        <el-upload :show-file-list="false" :http-request="importFile" accept=".xlsx,.xls,.csv">
+        <el-upload
+          :show-file-list="false"
+          :http-request="importFile"
+          accept=".xlsx,.xls,.csv"
+        >
           <el-button :loading="loading">上传 Excel / CSV</el-button>
         </el-upload>
+        <el-upload
+          :show-file-list="false"
+          :auto-upload="false"
+          :on-change="(file: any) => { if (file.raw) pendingImageFiles.push(file.raw); }"
+          accept="image/png,image/jpeg,image/jpg,image/bmp,image/webp"
+          multiple
+        >
+          <el-button :loading="loading">上传图片识别 JD</el-button>
+        </el-upload>
+        <el-button
+          v-if="pendingImageFiles.length > 0"
+          type="success"
+          :loading="loading"
+          @click="() => { importImages(pendingImageFiles); pendingImageFiles = []; }"
+        >
+          确认导入 ({{ pendingImageFiles.length }} 张)
+        </el-button>
         <span class="hint">表格建议列：company_name / job_title / city / salary / jd_text / job_url / source</span>
       </div>
 

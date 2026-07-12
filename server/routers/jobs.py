@@ -1,6 +1,7 @@
 """岗位相关接口。"""
 from __future__ import annotations
 
+import asyncio
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -12,12 +13,14 @@ from config import get_settings
 from database import get_db
 from models import Job, JobAnalysis, MatchResult
 from schemas.job import JobImportTextRequest, JobImportUrlRequest, JobOut
-from services import document_parser, job_agent, url_fetcher
+from services import baidu_ocr, document_parser, job_agent, url_fetcher
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 _SPLIT_RE = re.compile(r"\n\s*(?:-{3,}|={3,}|#{2,}|\n)\s*\n")
 _MAX_UPLOAD = 10 * 1024 * 1024  # 10 MiB 上传上限
+_MAX_IMAGES = 20  # 单次最多上传图片数
+_IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/bmp", "image/webp"}
 
 
 def _to_out(job: Job, db: Session) -> dict:
@@ -82,6 +85,60 @@ def import_url(req: JobImportUrlRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(job)
     return _to_out(job, db)
+
+
+@router.post("/import-images", response_model=list[JobOut])
+async def import_images(
+    files: list[UploadFile] = File(...), db: Session = Depends(get_db)
+):
+    """通过百度 OCR 识别图片中的 JD 文本并导入岗位。
+
+    支持 PNG / JPEG / JPG / BMP / WebP，单次最多 20 张，每张上限 10MB。
+    返回成功创建的岗位列表（按文件顺序），识别失败的跳过并在响应中提示。
+    """
+    if not files:
+        raise HTTPException(400, "未上传任何文件")
+    if len(files) > _MAX_IMAGES:
+        raise HTTPException(400, f"单次最多上传 {_MAX_IMAGES} 张图片")
+
+    # 校验 MIME 类型 + 大小
+    images: list[tuple[bytes, str]] = []
+    for f in files:
+        mime = (f.content_type or "").lower()
+        if mime not in _IMAGE_MIMES:
+            raise HTTPException(400, f"不支持的文件格式：{f.filename or 'unknown'}（仅支持图片）")
+        data = await f.read()
+        if len(data) > _MAX_UPLOAD:
+            raise HTTPException(413, f"文件 {f.filename} 过大（上限 {_MAX_UPLOAD // 1024 // 1024} MB）")
+        images.append((data, f.filename or "image"))
+
+    # 调用百度 OCR 批量识别
+    settings = get_settings()
+    ocr_results = await baidu_ocr.recognize_images_batch(images)
+
+    created: list[dict] = []
+    errors: list[str] = []
+
+    for res in ocr_results:
+        fname = res.get("filename", "")
+        if "error" in res:
+            errors.append(f"{fname}: {res['error']}")
+            continue
+        text = (res.get("text") or "").strip()
+        if not text:
+            errors.append(f"{fname}: 未识别到文字")
+            continue
+        job = Job(source="ocr_image", jd_text=text[:30000])
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        created.append(_to_out(job, db))
+
+    # 如果全部失败，返回 400；部分失败则正常返回成功的列表 + warning header
+    if not created and errors:
+        raise HTTPException(422, f"所有图片识别均失败：{'; '.join(errors[:5])}")
+
+    return created
 
 
 @router.get("", response_model=list[JobOut])

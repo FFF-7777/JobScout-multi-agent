@@ -143,6 +143,11 @@ export const api = {
   },
   importJobUrl: (url: string) =>
     http.post<Job>("/api/jobs/import-url", { url }).then((r) => r.data),
+  importJobImages: (files: File[]) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    return http.post<Job[]>("/api/jobs/import-images", fd).then((r) => r.data);
+  },
   listJobs: () => http.get<Job[]>("/api/jobs").then((r) => r.data),
   getJob: (id: number) => http.get<Job>(`/api/jobs/${id}`).then((r) => r.data),
   deleteJob: (id: number) =>

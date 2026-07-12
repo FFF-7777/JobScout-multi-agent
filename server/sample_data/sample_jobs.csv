@@ -1,0 +1,6 @@
+company_name,job_title,city,salary,jd_text,job_url,source
+某AI科技公司,AI Agent 应用开发实习生,杭州,200-300/天,"参与大模型应用和 AI Agent 系统开发；负责 RAG 知识库、工具调用、工作流编排；使用 Python、FastAPI、LangChain 完成后端开发。要求熟悉 Python，了解 FastAPI、LangChain、RAG 和向量数据库，有 AI 应用项目经验优先。",https://example.com/job/1,boss
+某软件公司,Python 后端开发实习生,上海,150-250/天,"负责后端接口开发与数据库设计，使用 Python、FastAPI、MySQL。要求熟悉 Python 与 Web 框架，了解 REST API，有项目经验优先。",https://example.com/job/2,boss
+某大厂,大模型算法实习生,北京,300-400/天,"参与大模型训练与微调，负责数据处理与模型评估。要求熟悉 PyTorch，了解 Transformer、分布式训练，有论文或竞赛经验优先，需掌握 Kubernetes。",https://example.com/job/3,lagou
+某教育机构,AI 助教实习生,北京,100-150/天,"负责 AI 课程答疑与学员作业批改，协助老师进行课程运营与社群维护。要求有耐心，善于沟通，了解基础编程即可。",https://example.com/job/4,boss
+某外包公司,Java/Python 开发实习,深圳,120-180/天,"外派至甲方参与项目开发，按需求完成编码任务。要求会 Java 或 Python，能接受出差与外包性质工作。",https://example.com/job/5,51job

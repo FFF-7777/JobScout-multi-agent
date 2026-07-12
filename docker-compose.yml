@@ -1,0 +1,29 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: internscout-server
+    environment:
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      - LLM_MODEL=${LLM_MODEL:-qwen-plus}
+      - DATABASE_URL=sqlite:////data/internscout.db
+      - CORS_ORIGINS=*
+    volumes:
+      - internscout_data:/data
+    ports:
+      - "8000:8000"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    container_name: internscout-app
+    depends_on:
+      - server
+    ports:
+      - "8080:80"
+
+volumes:
+  internscout_data:

@@ -1,0 +1,68 @@
+:root {
+  --is-primary: #3a6ff7;
+  --is-bg: #f5f7fb;
+  --is-card: #ffffff;
+  --is-text: #1f2733;
+  --is-muted: #8a94a6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--is-bg);
+  color: var(--is-text);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 4px 0 6px;
+}
+
+.page-sub {
+  color: var(--is-muted);
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+.card {
+  background: var(--is-card);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 2px 12px rgba(20, 40, 90, 0.05);
+  margin-bottom: 18px;
+}
+
+.grade-tag {
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 2px 10px;
+  color: #fff;
+}
+.grade-S { background: #e64545; }
+.grade-A { background: #f7861b; }
+.grade-B { background: #3a6ff7; }
+.grade-C { background: #8a94a6; }
+.grade-D { background: #b8bfca; }
+
+.section-h {
+  font-weight: 700;
+  margin: 16px 0 8px;
+  font-size: 15px;
+}

@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api, type MatchResult } from "@/api";
 import { useAppStore } from "@/stores/app";
+import JobDetailView from "@/views/JobDetailView.vue";
 
 const router = useRouter();
 const store = useAppStore();
@@ -13,6 +14,18 @@ const loading = ref(false);
 const cityFilter = ref<string>("");
 const levelFilter = ref<string>("");
 const skillFilter = ref<string>("");
+
+// 全屏大卡 modal 状态（点行弹出，点遮罩关闭）
+const detailJobId = ref<number | null>(null);
+const detailOpen = ref(false);
+function openDetail(jobId: number) {
+  detailJobId.value = jobId;
+  detailOpen.value = true;
+}
+function closeDetail() {
+  detailOpen.value = false;
+  detailJobId.value = null;
+}
 
 async function load() {
   loading.value = true;
@@ -81,7 +94,8 @@ onMounted(load);
         :data="filtered"
         style="width: 100%"
         empty-text="暂无结果，请先在 Agent 执行页运行分析"
-        @row-click="(row: MatchResult) => router.push(`/jobs/${row.job_id}`)"
+        @row-click="(row: MatchResult) => openDetail(row.job_id)"
+        :row-style="{ cursor: 'pointer' }"
         :default-sort="{ prop: 'score', order: 'descending' }"
       >
         <el-table-column prop="company_name" label="公司" min-width="140" />
@@ -102,11 +116,33 @@ onMounted(load);
         <el-table-column prop="recommendation" label="建议" width="120" />
         <el-table-column label="操作" width="90">
           <template #default="{ row }">
-            <el-button link type="primary" @click.stop="router.push(`/jobs/${row.job_id}`)">详情</el-button>
+            <el-button link type="primary" @click.stop="openDetail(row.job_id)">详情</el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
+
+    <!-- 分析结果大卡 modal：点行弹出，点遮罩关闭 -->
+    <teleport to="body">
+      <transition name="detail-fade">
+        <div
+          v-if="detailOpen"
+          class="detail-mask"
+          @mousedown.self="closeDetail"
+        >
+          <div class="detail-modal" @mousedown.stop>
+            <JobDetailView
+              v-if="detailJobId !== null"
+              :key="detailJobId"
+              :job-id-prop="detailJobId"
+              :embedded="true"
+              mode="analysis"
+              @close="closeDetail"
+            />
+          </div>
+        </div>
+      </transition>
+    </teleport>
   </div>
 </template>
 
@@ -115,5 +151,57 @@ onMounted(load);
   display: flex;
   gap: 12px;
   align-items: center;
+}
+
+/* === 分析结果大卡 modal === */
+.detail-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(20, 30, 50, 0.45);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 28px 20px;
+  overflow-y: auto;
+}
+.detail-modal {
+  position: relative;
+  width: 100%;
+  max-width: 980px;
+  background: transparent;
+  border-radius: 16px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  align-self: flex-start;
+  margin-bottom: 40px;
+}
+.detail-modal :deep(.page) {
+  max-width: 100%;
+  padding: 0;
+}
+.detail-modal :deep(.back-btn) {
+  display: none;
+}
+.detail-modal :deep(.el-loading-mask) {
+  border-radius: 16px;
+}
+.detail-fade-enter-active,
+.detail-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.detail-fade-enter-from,
+.detail-fade-leave-to {
+  opacity: 0;
+}
+.detail-fade-enter-active .detail-modal,
+.detail-fade-leave-active .detail-modal {
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.detail-fade-enter-from .detail-modal {
+  transform: translateY(20px) scale(0.98);
+}
+.detail-fade-leave-to .detail-modal {
+  transform: translateY(10px) scale(0.99);
 }
 </style>

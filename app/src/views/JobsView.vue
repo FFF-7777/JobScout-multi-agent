@@ -363,16 +363,16 @@ onMounted(refresh);
       >
         <el-table-column type="selection" width="48" />
         <el-table-column prop="id" label="ID" width="56" />
-        <el-table-column prop="company_name" label="公司" min-width="120" show-overflow-tooltip>
+        <el-table-column prop="company_name" label="公司" min-width="110" show-overflow-tooltip>
           <template #default="{ row }">{{ row.company_name || "（待解析）" }}</template>
         </el-table-column>
-        <el-table-column prop="job_title" label="岗位" min-width="140" show-overflow-tooltip>
+        <el-table-column prop="job_title" label="岗位" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.job_title || "（待解析）" }}</template>
         </el-table-column>
-        <el-table-column prop="city" label="城市" width="80" show-overflow-tooltip />
-        <el-table-column prop="salary" label="薪资" width="100" show-overflow-tooltip />
-        <el-table-column prop="source" label="来源" width="80" show-overflow-tooltip />
-        <el-table-column label="模式" width="68" align="center">
+        <el-table-column prop="city" label="城市" width="70" show-overflow-tooltip />
+        <el-table-column prop="salary" label="薪资" width="80" show-overflow-tooltip />
+        <el-table-column prop="source" label="来源" width="70" show-overflow-tooltip />
+        <el-table-column label="模式" width="60" align="center">
           <template #default="{ row }">
             <el-tag
               size="small"
@@ -384,14 +384,14 @@ onMounted(refresh);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="JD 预览" min-width="380" cell-class-name="jd-prev-cell">
+        <el-table-column label="JD 预览" min-width="280" cell-class-name="jd-prev-cell">
           <template #default="{ row }">
             <div class="jd-prev">
               {{ row.jd_text || "（暂无 JD 文本）" }}
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" align="center">
+        <el-table-column label="操作" width="110" align="center">
           <template #default="{ row }">
             <el-button
               link
@@ -474,15 +474,14 @@ onMounted(refresh);
   font-size: 14px;
   line-height: 1.6;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;            /* 3 行 → 2 行，按用户要求缩小一半 */
   -webkit-box-orient: vertical;
   overflow: hidden;
   word-break: break-word;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-  padding-right: 16px;
+  padding-right: 12px;
   box-sizing: border-box;
-  /* 末尾自然用 … 截断（-webkit-box 模式下最后一行末尾会自动 …） */
 }
 /* 让 JD 列的 td 上下 padding 大一点、top 对齐 */
 .job-table :deep(td.jd-prev-cell),

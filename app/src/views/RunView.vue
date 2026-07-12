@@ -118,14 +118,22 @@ async function start() {
   status.value = "running";
   taskStartedAt.value = Date.now();
   try {
-    const jobs = await api.listJobs();
-    if (!jobs.length) {
-      running.value = false;
-      ElMessage.warning("请先导入岗位再开始分析");
-      router.push("/jobs");
-      return;
+    // 优先用 JobsView 选中的；没选则跑全部并提示
+    let jobIds: number[];
+    if (store.selectedJobIds.length > 0) {
+      jobIds = [...store.selectedJobIds];
+    } else {
+      const jobs = await api.listJobs();
+      if (!jobs.length) {
+        running.value = false;
+        ElMessage.warning("请先导入岗位再开始分析");
+        router.push("/jobs");
+        return;
+      }
+      jobIds = jobs.map((j) => j.id);
+      ElMessage.info(`未在 JobsView 选择，已分析全部 ${jobIds.length} 个岗位`);
     }
-    const t = await api.runAgents(store.resumeId, jobs.map((j) => j.id));
+    const t = await api.runAgents(store.resumeId, jobIds);
     store.setTask(t.task_id);
     steps.value = t.steps;
     pollTimer = window.setInterval(() => poll(t.task_id), 1800);

@@ -132,6 +132,7 @@ async function deleteOne(job: Job) {
     await api.deleteJob(job.id);
     ElMessage.success("已删除");
     selectedIds.value = selectedIds.value.filter((x) => x !== job.id);
+    store.setSelectedJobIds(selectedIds.value);
     await refresh();
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "删除失败");
@@ -157,6 +158,7 @@ async function deleteSelected() {
     const res = await api.batchDeleteJobs(ids);
     ElMessage.success(`已删除 ${res.deleted.length} 个岗位`);
     selectedIds.value = [];
+    store.setSelectedJobIds([]);
     await refresh();
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "批量删除失败");
@@ -167,6 +169,7 @@ async function deleteSelected() {
 
 function onSelectionChange(rows: Job[]) {
   selectedIds.value = rows.map((r) => r.id);
+  store.setSelectedJobIds(selectedIds.value);
 }
 
 function startAnalyze() {

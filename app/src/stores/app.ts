@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import type { Resume, ResumeProfile, ResumeSummary } from "@/api";
 
 const STORAGE_KEY = "jobscout-store";
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 
 type Persisted = {
   v: number;
@@ -13,6 +13,8 @@ type Persisted = {
   taskId: string | null;
   // 简历列表的精简版（不含 raw_text / profile_json 大字段）
   resumeList: ResumeSummary[];
+  // JobsView 勾选的岗位 ID 列表（用于 RunView 准确只跑选中的）
+  selectedJobIds: number[];
 };
 
 function loadPersisted(): Partial<Persisted> {
@@ -28,6 +30,8 @@ function loadPersisted(): Partial<Persisted> {
         resume: parsed.resume ?? null,
         profile: parsed.profile ?? null,
         taskId: parsed.taskId ?? null,
+        resumeList: Array.isArray(parsed.resumeList) ? parsed.resumeList : [],
+        selectedJobIds: [],
       };
     }
     return parsed;
@@ -54,6 +58,7 @@ export const useAppStore = defineStore("app", {
       profile: p.profile ?? null,
       taskId: p.taskId ?? null,
       resumeList: p.resumeList ?? [],
+      selectedJobIds: p.selectedJobIds ?? [],
     };
   },
   actions: {
@@ -86,6 +91,10 @@ export const useAppStore = defineStore("app", {
       }
       this._persist();
     },
+    setSelectedJobIds(ids: number[]) {
+      this.selectedJobIds = ids;
+      this._persist();
+    },
     _persist() {
       save({
         v: STORAGE_VERSION,
@@ -95,6 +104,7 @@ export const useAppStore = defineStore("app", {
         profile: this.profile,
         taskId: this.taskId,
         resumeList: this.resumeList,
+        selectedJobIds: this.selectedJobIds,
       });
     },
   },

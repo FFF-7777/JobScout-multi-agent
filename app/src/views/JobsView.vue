@@ -215,6 +215,19 @@ function onSelectionChange(rows: Job[]) {
   store.setSelectedJobIds(selectedIds.value);
 }
 
+function onCellClick(row: Job, _column: any, _cell: any, event: MouseEvent) {
+  // 点击 selection 列（checkbox）时不跳详情
+  const target = event.target as HTMLElement;
+  if (target.closest(".el-table__column--selection") || target.closest(".el-checkbox")) {
+    return;
+  }
+  // 点击操作列时不跳详情
+  if (target.closest(".el-table__fixed-right")) {
+    return;
+  }
+  router.push(`/jobs/${row.id}`);
+}
+
 function startAnalyze() {
   if (!store.resumeId) {
     ElMessage.warning("请先在「简历画像」页解析简历");
@@ -297,7 +310,10 @@ onMounted(refresh);
         style="width: 100%"
         empty-text="暂无岗位，请先导入"
         @selection-change="onSelectionChange"
+        @cell-click="onCellClick"
         row-key="id"
+        class="job-table"
+        :row-style="{ cursor: 'pointer' }"
       >
         <el-table-column type="selection" width="48" />
         <el-table-column prop="id" label="ID" width="60" />
@@ -321,9 +337,9 @@ onMounted(refresh);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="JD 预览" min-width="220">
+        <el-table-column label="JD 预览" min-width="380">
           <template #default="{ row }">
-            <span class="jd-prev">{{ row.jd_text?.slice(0, 40) }}…</span>
+            <span class="jd-prev">{{ (row.jd_text || "").slice(0, 100) }}…</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
@@ -333,11 +349,11 @@ onMounted(refresh);
               type="primary"
               size="small"
               :loading="analyzingIds.has(row.id)"
-              @click="reanalyzeOne(row)"
+              @click.stop="reanalyzeOne(row)"
             >
               重新解析
             </el-button>
-            <el-button link type="danger" size="small" @click="deleteOne(row)">删除</el-button>
+            <el-button link type="danger" size="small" @click.stop="deleteOne(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -376,6 +392,12 @@ onMounted(refresh);
 .jd-prev {
   color: #8a94a6;
   font-size: 13px;
+  line-height: 1.5;
+  display: inline-block;
+  word-break: break-all;
+}
+.job-table :deep(tbody tr):hover > td {
+  background-color: #f5f8ff !important;
 }
 .url-row {
   display: flex;

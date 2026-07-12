@@ -81,9 +81,20 @@ function goBack() {
 
 <template>
   <div class="page" v-loading="loading">
-    <el-button link type="primary" @click="goBack()">← 返回</el-button>
+    <el-button v-if="!embedded" link type="primary" class="back-btn" @click="goBack()">
+      ← 返回
+    </el-button>
     <el-empty v-if="!loading && !job" description="未找到该岗位（可能已被删除）" />
     <div v-else-if="job" class="big-card">
+      <button
+        v-if="embedded"
+        class="bigcard-close"
+        @click="emit('close')"
+        title="关闭"
+        aria-label="关闭"
+      >
+        ×
+      </button>
       <div class="big-card-head">
         <div class="hero-title">
           <span class="company">{{ job.company_name || "（待解析）" }}</span>
@@ -417,11 +428,44 @@ ol {
   background: #f5f7fb;
   padding: 20px 24px;
   border-radius: 8px;
+  font-family: "Microsoft YaHei", "PingFang SC", "Heiti SC", "SimHei", "黑体", sans-serif;
   font-size: 16px;
-  line-height: 1.8;
-  color: #2c3340;
+  line-height: 1.85;
+  color: #1f2733;
+  font-weight: 500;
   border: 1px solid #ebeef5;
   margin: 0;
+}
+
+/* === 大卡片右上角 X 按钮（仅 modal 模式显示）=== */
+.big-card {
+  position: relative;          /* 给 X 提供定位锚点 */
+}
+.bigcard-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 10;
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1f2733;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  transition: transform 0.15s, background 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.bigcard-close:hover {
+  background: #f5f7fb;
+  transform: scale(1.1);
 }
 
 /* === 响应式 === */

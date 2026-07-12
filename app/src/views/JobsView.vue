@@ -416,7 +416,6 @@ onMounted(refresh);
           @mousedown.self="closeDetail"
         >
           <div class="detail-modal" @mousedown.stop>
-            <button class="detail-close" @click="closeDetail" title="关闭">×</button>
             <JobDetailView
               v-if="detailJobId !== null"
               :key="detailJobId"
@@ -539,28 +538,6 @@ onMounted(refresh);
 }
 .detail-modal :deep(.el-loading-mask) {
   border-radius: 16px;
-}
-.detail-close {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  z-index: 10;
-  width: 36px;
-  height: 36px;
-  border: none;
-  background: rgba(255, 255, 255, 0.92);
-  color: #1f2733;
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1;
-  border-radius: 50%;
-  cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-  transition: transform 0.15s, background 0.15s;
-}
-.detail-close:hover {
-  background: #f5f7fb;
-  transform: scale(1.08);
 }
 
 /* 进入/退出动画 */

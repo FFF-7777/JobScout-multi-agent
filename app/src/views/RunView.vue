@@ -56,13 +56,24 @@ function fmtDuration(seconds: number) {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+/** 后端 SQLAlchemy DateTime 序列化成 naive ISO（无时区），
+ *  实际存的是 UTC（datetime.utcnow() / func.now()）。前端 new Date() 会按本地时间解析，
+ *  导致 UTC vs GMT+8 偏差 8 小时。这里统一补 Z 当 UTC 解析。 */
+function parseBackendTime(iso: string | null | undefined): number {
+  if (!iso) return NaN;
+  // 已经有 Z 或 +HH:MM 时区信息，直接走
+  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso)) {
+    return new Date(iso).getTime();
+  }
+  // naive ISO（YYYY-MM-DDTHH:MM:SS[.fff]）→ 当 UTC
+  return new Date(iso + "Z").getTime();
+}
+
 function stepElapsedMs(step: AgentRun): number {
   // 优先用后端 started_at/finished_at，本地秒表兜底
   if (step.started_at) {
-    const start = new Date(step.started_at).getTime();
-    const end = step.finished_at
-      ? new Date(step.finished_at).getTime()
-      : nowTick.value;
+    const start = parseBackendTime(step.started_at);
+    const end = step.finished_at ? parseBackendTime(step.finished_at) : nowTick.value;
     return Math.max(0, end - start);
   }
   if (taskStartedAt.value) {
@@ -85,7 +96,7 @@ async function poll(taskId: string) {
       // 用第一个 step 的 started_at 当作任务起始时间（仅在 running 时）
       const firstStarted = t.steps.find((s) => s.started_at)?.started_at;
       if (firstStarted && taskStartedAt.value === null) {
-        taskStartedAt.value = new Date(firstStarted).getTime();
+        taskStartedAt.value = parseBackendTime(firstStarted);
       } else if (!firstStarted && taskStartedAt.value === null) {
         taskStartedAt.value = Date.now();
       }
@@ -273,7 +284,7 @@ onUnmounted(stopPoll);
               · 预计剩余 {{ fmtDuration(s.eta_seconds) }}
             </span>
             <span v-if="s.status === 'success' && s.finished_at && s.started_at">
-              · 共 {{ fmtDuration((new Date(s.finished_at).getTime() - new Date(s.started_at).getTime()) / 1000) }}
+              · 共 {{ fmtDuration((parseBackendTime(s.finished_at) - parseBackendTime(s.started_at)) / 1000) }}
             </span>
           </div>
           <div class="tl-summary">{{ s.summary || "—" }}</div>

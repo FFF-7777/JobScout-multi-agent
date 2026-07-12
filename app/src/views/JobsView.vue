@@ -228,32 +228,23 @@ function onCellClick(row: Job, _column: any, _cell: any, event: MouseEvent) {
   if (target.closest(".el-table__fixed-right")) {
     return;
   }
-  // 记录当前滚动位置，回来时恢复
-  const scroller =
-    document.querySelector(".el-table .el-scrollbar__wrap") ||
-    document.querySelector(".el-table__body-wrapper") ||
-    document.scrollingElement;
-  if (scroller) {
-    sessionStorage.setItem(SCROLL_KEY, String(scroller.scrollTop || 0));
-  }
+  // 记录 window 滚动位置，回来时恢复
+  sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
   router.push(`/jobs/${row.id}`);
 }
 
 async function restoreScroll() {
   const y = Number(sessionStorage.getItem(SCROLL_KEY) || "0");
   if (!y) return;
+  // 用 rAF + setTimeout 双保险，等 DOM/图片都画完再滚
   await nextTick();
-  // 等 el-table 渲染完
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: y, left: 0, behavior: "auto" });
+  });
   setTimeout(() => {
-    const scroller =
-      document.querySelector(".el-table .el-scrollbar__wrap") ||
-      document.querySelector(".el-table__body-wrapper") ||
-      document.scrollingElement;
-    if (scroller) {
-      scroller.scrollTop = y;
-    }
+    window.scrollTo({ top: y, left: 0, behavior: "auto" });
     sessionStorage.removeItem(SCROLL_KEY);
-  }, 50);
+  }, 200);
 }
 
 onMounted(async () => {

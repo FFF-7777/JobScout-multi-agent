@@ -336,6 +336,12 @@ function gotoResults() {
         </template>
       </template>
 
+      <!-- 底部：岗位原始 JD 原文（仅 analysis 模式显示在最后，info 模式在上面已经显示过） -->
+      <div v-if="showAnalysis" class="sub-card jd-block">
+        <div class="sub-head">📄 岗位原始 JD</div>
+        <pre class="jd">{{ job.jd_text }}</pre>
+      </div>
+
       <!-- 底部操作：info 模式跳推荐结果；analysis 模式跳 JobsView 弹窗 -->
       <div v-if="embedded" class="big-card-foot">
         <el-button
@@ -557,6 +563,8 @@ ol {
   font-weight: 500;
   border: 1px solid #ebeef5;
   margin: 0;
+  max-height: 360px;            /* 大卡底部 JD 给个上限，避免撑爆 */
+  overflow-y: auto;
 }
 
 /* === 底部操作区 === */

@@ -441,14 +441,18 @@ onMounted(refresh);
   flex-wrap: wrap;
 }
 .job-table :deep(.el-table__column--selection) .el-checkbox {
-  /* 放大行内 checkbox：从默认 14px 到 18px */
-  transform: scale(1.3);
+  /* 行内 checkbox 再大三倍（之前 1.3 → 现在 2.5 约等于 3 倍视觉） */
+  transform: scale(2.5);
   transform-origin: center;
 }
 .job-table :deep(.el-table__column--selection) .cell {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 10px 0;        /* 给放大后的 checkbox 留垂直空间 */
+}
+.job-table :deep(.el-table__column--selection) {
+  width: 64px !important; /* checkbox 放大后列宽跟着加 */
 }
 .toolbar-right {
   display: flex;

@@ -205,16 +205,17 @@ ol {
 }
 .chip-title {
   color: #8a94a6;
-  font-size: 13px;
+  font-size: 14px;
   margin-right: 8px;
 }
 .jd {
   white-space: pre-wrap;
   background: #f5f7fb;
-  padding: 14px;
+  padding: 18px 20px;
   border-radius: 8px;
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 16px;          /* JD 全文加到 16px，便于阅读 */
+  line-height: 1.8;
+  color: #2c3340;
 }
 @media (max-width: 900px) {
   .grid2 {

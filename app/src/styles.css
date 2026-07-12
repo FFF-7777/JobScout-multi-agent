@@ -21,6 +21,8 @@ body {
   background: var(--is-bg);
   color: var(--is-text);
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 15px;          /* 基础字号 14 → 15 */
+  line-height: 1.6;
 }
 
 .page {
@@ -30,7 +32,7 @@ body {
 }
 
 .page-title {
-  font-size: 22px;
+  font-size: 26px;            /* 22 → 26 */
   font-weight: 700;
   margin: 4px 0 6px;
 }
@@ -38,7 +40,7 @@ body {
 .page-sub {
   color: var(--is-muted);
   margin-bottom: 20px;
-  font-size: 14px;
+  font-size: 15px;            /* 14 → 15 */
 }
 
 .card {
@@ -64,5 +66,5 @@ body {
 .section-h {
   font-weight: 700;
   margin: 16px 0 8px;
-  font-size: 15px;
+  font-size: 16px;            /* 15 → 16 */
 }

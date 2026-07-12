@@ -558,13 +558,13 @@ onMounted(refresh);
 }
 .jd-preview-text {
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 15px;            /* 13 → 15 */
+  line-height: 1.75;
   color: #2c3340;
   background: #f7f9ff;
   border: 1px solid #ebeef5;
   border-radius: 8px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: calc(100vh - 280px);

@@ -56,6 +56,8 @@ export interface AgentRun {
   progress: number;
   output_json: any;
   error_message: string;
+  eta_seconds: number;
+  current_item: string;
 }
 export interface WorkflowTask {
   task_id: string;
@@ -88,6 +90,20 @@ export interface ReportItem {
   markdown_content: string;
 }
 
+export interface ResumeSummary {
+  id: number;
+  filename: string;
+  profile_name: string;
+  has_profile: boolean;
+  created_at: string | null;
+}
+
+export interface BatchAnalyzeItem {
+  id: number;
+  ok: boolean;
+  error: string;
+}
+
 export const api = {
   health: () => http.get("/health").then((r) => r.data),
   testLLM: () => http.post("/api/test-llm").then((r) => r.data),
@@ -112,6 +128,10 @@ export const api = {
   getResume: (id: number) => http.get<Resume>(`/api/resumes/${id}`).then((r) => r.data),
   updateProfile: (id: number, profile: ResumeProfile) =>
     http.put<Resume>(`/api/resumes/${id}/profile`, { profile_json: profile }).then((r) => r.data),
+  deleteResume: (id: number) =>
+    http.delete<{ ok: boolean; id: number }>(`/api/resumes/${id}`).then((r) => r.data),
+  listResumeSummary: () =>
+    http.get<ResumeSummary[]>("/api/resumes/summary/list").then((r) => r.data),
 
   importJobsText: (jd_text: string, split_batch: boolean) =>
     http.post<Job[]>("/api/jobs/import-text", { jd_text, split_batch }).then((r) => r.data),
@@ -124,6 +144,18 @@ export const api = {
     http.post<Job>("/api/jobs/import-url", { url }).then((r) => r.data),
   listJobs: () => http.get<Job[]>("/api/jobs").then((r) => r.data),
   getJob: (id: number) => http.get<Job>(`/api/jobs/${id}`).then((r) => r.data),
+  deleteJob: (id: number) =>
+    http.delete<{ ok: boolean; id: number }>(`/api/jobs/${id}`).then((r) => r.data),
+  batchDeleteJobs: (ids: number[]) =>
+    http
+      .delete<{ ok: boolean; deleted: number[] }>(`/api/jobs`, {
+        params: { ids: ids.join(",") },
+      })
+      .then((r) => r.data),
+  batchAnalyzeJobs: (ids: number[]) =>
+    http
+      .post<BatchAnalyzeItem[]>("/api/jobs/analyze-batch", { ids })
+      .then((r) => r.data),
 
   runAgents: (resume_id: number, job_ids: number[]) =>
     http.post<WorkflowTask>("/api/agents/run", { resume_id, job_ids }).then((r) => r.data),

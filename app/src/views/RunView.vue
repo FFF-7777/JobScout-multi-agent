@@ -12,7 +12,13 @@ const steps = ref<AgentRun[]>([]);
 const status = ref<string>("");
 const running = ref(false);
 const connError = ref(false);
-let timer: number | null = null;
+let pollTimer: number | null = null;
+let tickTimer: number | null = null;
+
+// 任务起始时间（毫秒）。轮询时若后端未给 started_at，用本地时间兜底。
+const taskStartedAt = ref<number | null>(null);
+// 实时秒表：每秒自增
+const nowTick = ref<number>(Date.now());
 
 const STATUS_META: Record<string, { icon: string; color: string; label: string; type: any }> = {
   pending: { icon: "○", color: "#b8bfca", label: "等待中", type: "info" },
@@ -21,7 +27,6 @@ const STATUS_META: Record<string, { icon: string; color: string; label: string; 
   failed: { icon: "✕", color: "#e64545", label: "失败", type: "danger" },
 };
 
-// 整体任务状态（与后端 _task_status 对齐）的中文标签
 const TASK_STATUS_META: Record<string, { label: string; type: any }> = {
   running: { label: "执行中", type: "primary" },
   completed: { label: "全部完成", type: "success" },
@@ -30,14 +35,40 @@ const TASK_STATUS_META: Record<string, { label: string; type: any }> = {
 };
 
 function stopPoll() {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  if (tickTimer) {
+    clearInterval(tickTimer);
+    tickTimer = null;
   }
 }
 
-function isFinished(status: string) {
-  return ["completed", "failed", "completed_with_errors"].includes(status);
+function isFinished(s: string) {
+  return ["completed", "failed", "completed_with_errors"].includes(s);
+}
+
+function fmtDuration(seconds: number) {
+  seconds = Math.max(0, Math.round(seconds));
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
+function stepElapsedMs(step: AgentRun): number {
+  // 优先用后端 started_at/finished_at，本地秒表兜底
+  if (step.started_at) {
+    const start = new Date(step.started_at).getTime();
+    const end = step.finished_at
+      ? new Date(step.finished_at).getTime()
+      : nowTick.value;
+    return Math.max(0, end - start);
+  }
+  if (taskStartedAt.value) {
+    return Math.max(0, nowTick.value - taskStartedAt.value);
+  }
+  return 0;
 }
 
 async function poll(taskId: string) {
@@ -45,6 +76,13 @@ async function poll(taskId: string) {
     const t = await api.getTask(taskId);
     steps.value = t.steps;
     status.value = t.status;
+    // 用第一个 step 的 started_at 当作任务起始时间
+    const firstStarted = t.steps.find((s) => s.started_at)?.started_at;
+    if (firstStarted && taskStartedAt.value === null) {
+      taskStartedAt.value = new Date(firstStarted).getTime();
+    } else if (!firstStarted && taskStartedAt.value === null) {
+      taskStartedAt.value = Date.now();
+    }
     if (isFinished(t.status)) {
       running.value = false;
       stopPoll();
@@ -64,6 +102,7 @@ async function start() {
   }
   running.value = true;
   status.value = "running";
+  taskStartedAt.value = Date.now();
   try {
     const jobs = await api.listJobs();
     if (!jobs.length) {
@@ -75,7 +114,10 @@ async function start() {
     const t = await api.runAgents(store.resumeId, jobs.map((j) => j.id));
     store.setTask(t.task_id);
     steps.value = t.steps;
-    timer = window.setInterval(() => poll(t.task_id), 1800);
+    pollTimer = window.setInterval(() => poll(t.task_id), 1800);
+    if (!tickTimer) {
+      tickTimer = window.setInterval(() => (nowTick.value = Date.now()), 1000);
+    }
   } catch (e: any) {
     running.value = false;
     ElMessage.error(e?.response?.data?.detail || "启动失败");
@@ -92,10 +134,18 @@ function progressPercent(step: AgentRun): number {
   return step.progress || 0;
 }
 
+// 把 4 个节点拼成一条总进度：step 1-4 各占 25%，节点内 0-100 映射
 const overallProgress = computed(() => {
   if (!steps.value.length) return 0;
-  const total = steps.value.reduce((sum, s) => sum + progressPercent(s), 0);
-  return Math.round(total / steps.value.length);
+  const completedNodes = steps.value.filter(
+    (s) => s.status === "success" || s.status === "failed"
+  ).length;
+  const runningNode = steps.value.find((s) => s.status === "running");
+  const baseFromDone = completedNodes * 25;
+  if (runningNode) {
+    return Math.min(99, baseFromDone + Math.round((progressPercent(runningNode) / 100) * 25));
+  }
+  return Math.min(100, baseFromDone);
 });
 
 const overallLabel = computed(() => {
@@ -106,12 +156,30 @@ const overallLabel = computed(() => {
   return `执行中… ${overallProgress.value}%`;
 });
 
+const totalElapsedSec = computed(() => {
+  if (taskStartedAt.value === null) return 0;
+  return Math.round((nowTick.value - taskStartedAt.value) / 1000);
+});
+
+// 剩余时间 = 当前 running 节点的 eta_seconds 之和 + 后续未跑节点的预估（用 done 节点平均 * 默认 6s 兜底）
+const totalEtaSec = computed(() => {
+  const runningStep = steps.value.find((s) => s.status === "running");
+  if (runningStep) {
+    return runningStep.eta_seconds || 0;
+  }
+  return 0;
+});
+
 onMounted(async () => {
   if (store.taskId) {
     await poll(store.taskId);
     if (status.value && !isFinished(status.value)) {
-      timer = window.setInterval(() => poll(store.taskId!), 1800);
+      pollTimer = window.setInterval(() => poll(store.taskId!), 1800);
     }
+  }
+  // 即使没任务，也启动秒表，避免进入页面时 elapsed 一直为 0
+  if (!tickTimer) {
+    tickTimer = window.setInterval(() => (nowTick.value = Date.now()), 1000);
   }
 });
 onUnmounted(stopPoll);
@@ -120,7 +188,7 @@ onUnmounted(stopPoll);
 <template>
   <div class="page">
     <div class="page-title">Agent 执行流程</div>
-    <div class="page-sub">点击开始后，LangGraph 会依次执行 4 个 Agent，下方实时显示每一步状态与进度。</div>
+    <div class="page-sub">点击开始后，LangGraph 会依次执行 4 个 Agent，下方实时显示每一步状态、当前正在处理哪一条与剩余时间。</div>
 
     <el-alert
       v-if="connError && running"
@@ -136,6 +204,16 @@ onUnmounted(stopPoll);
         <el-tag v-if="status" style="margin-left: 12px" :type="TASK_STATUS_META[status]?.type || 'primary'">
           {{ TASK_STATUS_META[status]?.label || status }}
         </el-tag>
+      </div>
+      <div class="toolbar-stats" v-if="running || isFinished(status)">
+        <div class="stat">
+          <span class="stat-label">已耗时</span>
+          <span class="stat-value">{{ fmtDuration(totalElapsedSec) }}</span>
+        </div>
+        <div class="stat" v-if="!isFinished(status)">
+          <span class="stat-label">预计剩余</span>
+          <span class="stat-value">{{ fmtDuration(totalEtaSec) }}</span>
+        </div>
       </div>
       <div style="display: flex; gap: 12px">
         <el-button type="primary" :loading="running" @click="start">开始分析</el-button>
@@ -161,7 +239,7 @@ onUnmounted(stopPoll);
     <div class="timeline">
       <div v-for="(s, i) in steps" :key="s.id" class="tl-item">
         <div class="tl-left">
-          <div class="tl-dot" :style="{ background: STATUS_META[s.status]?.color }">
+          <div :class="['tl-dot', { pulse: s.status === 'running' }]" :style="{ background: STATUS_META[s.status]?.color }">
             {{ STATUS_META[s.status]?.icon }}
           </div>
           <div v-if="i < steps.length - 1" class="tl-line" />
@@ -169,9 +247,14 @@ onUnmounted(stopPoll);
         <div class="card tl-body">
           <div class="tl-head">
             <b>{{ s.agent_name }}</b>
-            <el-tag size="small" :color="STATUS_META[s.status]?.color" style="color: #fff; border: none">
-              {{ STATUS_META[s.status]?.label }}
-            </el-tag>
+            <div style="display: flex; gap: 8px; align-items: center">
+              <span v-if="s.status === 'running' && s.current_item" class="tl-current">
+                {{ s.current_item }}
+              </span>
+              <el-tag size="small" :color="STATUS_META[s.status]?.color" style="color: #fff; border: none">
+                {{ STATUS_META[s.status]?.label }}
+              </el-tag>
+            </div>
           </div>
           <div class="tl-progress">
             <el-progress
@@ -180,6 +263,15 @@ onUnmounted(stopPoll);
               :status="s.status === 'success' ? 'success' : s.status === 'failed' ? 'exception' : undefined"
               :indeterminate="s.status === 'running' && (s.progress || 0) === 0"
             />
+          </div>
+          <div class="tl-meta">
+            <span>已耗时 {{ fmtDuration(stepElapsedMs(s) / 1000) }}</span>
+            <span v-if="s.status === 'running' && s.eta_seconds > 0">
+              · 预计剩余 {{ fmtDuration(s.eta_seconds) }}
+            </span>
+            <span v-if="s.status === 'success' && s.finished_at && s.started_at">
+              · 共 {{ fmtDuration((new Date(s.finished_at).getTime() - new Date(s.started_at).getTime()) / 1000) }}
+            </span>
           </div>
           <div class="tl-summary">{{ s.summary || "—" }}</div>
           <div v-if="s.error_message" class="tl-error">错误：{{ s.error_message }}</div>
@@ -201,6 +293,31 @@ onUnmounted(stopPoll);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.toolbar-stats {
+  display: flex;
+  gap: 18px;
+  padding: 6px 14px;
+  background: #f5f7fb;
+  border-radius: 10px;
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.3;
+}
+.stat-label {
+  font-size: 11px;
+  color: #8a94a6;
+}
+.stat-value {
+  font-weight: 700;
+  font-size: 18px;
+  color: #3a6ff7;
+  font-variant-numeric: tabular-nums;
 }
 .overall {
   margin-top: 16px;
@@ -226,6 +343,25 @@ onUnmounted(stopPoll);
   place-items: center;
   font-size: 16px;
   flex-shrink: 0;
+  transition: transform 0.2s;
+}
+.tl-dot.pulse {
+  animation: pulse-ring 1.6s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(58, 111, 247, 0.6);
+}
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(58, 111, 247, 0.55);
+    transform: scale(1);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(58, 111, 247, 0);
+    transform: scale(1.05);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(58, 111, 247, 0);
+    transform: scale(1);
+  }
 }
 .tl-line {
   width: 2px;
@@ -241,9 +377,25 @@ onUnmounted(stopPoll);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+}
+.tl-current {
+  color: #3a6ff7;
+  font-size: 12px;
+  background: #eef3ff;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
 }
 .tl-progress {
   margin-top: 10px;
+}
+.tl-meta {
+  color: #8a94a6;
+  font-size: 12px;
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
 }
 .tl-summary {
   color: #5a6472;

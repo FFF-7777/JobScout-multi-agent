@@ -23,5 +23,7 @@ class AgentRun(Base):
     output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str] = mapped_column(Text, default="")
     progress: Mapped[int] = mapped_column(Integer, default=0)
+    eta_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    current_item: Mapped[str] = mapped_column(String(255), default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

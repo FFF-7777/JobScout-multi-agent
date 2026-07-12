@@ -48,6 +48,7 @@ def init_db() -> None:
     _enable_wal()
     _migrate_agent_runs_progress()
     _migrate_agent_runs_timestamps()
+    _migrate_agent_runs_eta()
 
 
 def _enable_wal() -> None:
@@ -87,6 +88,24 @@ def _migrate_agent_runs_timestamps() -> None:
     needed = {
         "started_at": "ALTER TABLE agent_runs ADD COLUMN started_at TIMESTAMP",
         "finished_at": "ALTER TABLE agent_runs ADD COLUMN finished_at TIMESTAMP",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in columns:
+                conn.execute(text(ddl))
+
+
+def _migrate_agent_runs_eta() -> None:
+    """为 agent_runs 补齐 ETA / current_item 列（增量进度可视化用），幂等。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "agent_runs" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("agent_runs")}
+    needed = {
+        "eta_seconds": "ALTER TABLE agent_runs ADD COLUMN eta_seconds INTEGER DEFAULT 0",
+        "current_item": "ALTER TABLE agent_runs ADD COLUMN current_item VARCHAR(255) DEFAULT ''",
     }
     with engine.begin() as conn:
         for col, ddl in needed.items():

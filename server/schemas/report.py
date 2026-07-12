@@ -32,6 +32,8 @@ class AgentRunOut(BaseModel):
     error_message: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    eta_seconds: int = 0
+    current_item: str = ""
 
     class Config:
         from_attributes = True

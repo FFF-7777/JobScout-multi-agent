@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "*"
 
+    # 工作流：Job / Match / Report 节点内并发调用 LLM 的上限
+    # 设太高容易触发 DashScope 限流；默认 3，留 env 调节
+    llm_concurrency: int = 3
+
     @property
     def has_api_key(self) -> bool:
         return bool(self.dashscope_api_key and self.dashscope_api_key.strip())

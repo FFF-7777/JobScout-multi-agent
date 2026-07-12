@@ -2,20 +2,22 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-_MAX_UPLOAD = 10 * 1024 * 1024  # 10 MiB 上传上限
-
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from config import get_settings
 from database import get_db
-from models import Job, JobAnalysis
+from models import Job, JobAnalysis, MatchResult
 from schemas.job import JobImportTextRequest, JobImportUrlRequest, JobOut
 from services import document_parser, job_agent, url_fetcher
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 _SPLIT_RE = re.compile(r"\n\s*(?:-{3,}|={3,}|#{2,}|\n)\s*\n")
+_MAX_UPLOAD = 10 * 1024 * 1024  # 10 MiB 上传上限
 
 
 def _to_out(job: Job, db: Session) -> dict:
@@ -111,14 +113,20 @@ def analyze_job(job_id: int, db: Session = Depends(get_db)):
         profile = job_agent.run(job.jd_text, hints)
     except Exception:
         raise HTTPException(502, "岗位分析失败：模型返回异常，请稍后重试")
+    _apply_analysis(job, profile, db)
+    db.refresh(job)
+    return _to_out(job, db)
+
+
+def _apply_analysis(job: Job, profile, db: Session) -> None:
+    """把 JobProfile 写回 job 主表与 job_analysis 表。供 analyze 与 batch 复用。"""
     job.company_name = job.company_name or profile.company_name
     job.job_title = job.job_title or profile.job_title
     job.city = job.city or profile.city
     job.salary = job.salary or profile.salary
-
-    existing = db.query(JobAnalysis).filter(JobAnalysis.job_id == job_id).first()
+    existing = db.query(JobAnalysis).filter(JobAnalysis.job_id == job.id).first()
     if existing is None:
-        existing = JobAnalysis(job_id=job_id)
+        existing = JobAnalysis(job_id=job.id)
         db.add(existing)
     existing.job_type = profile.job_type
     existing.required_skills = profile.required_skills
@@ -128,5 +136,99 @@ def analyze_job(job_id: int, db: Session = Depends(get_db)):
     existing.risk_tags = profile.risk_tags
     existing.analysis_json = profile.model_dump()
     db.commit()
-    db.refresh(job)
-    return _to_out(job, db)
+
+
+@router.delete("/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db)):
+    """删除单个岗位；级联清理 job_analysis 与不带 task_id 的 match_results。"""
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "岗位不存在")
+    db.query(JobAnalysis).filter(JobAnalysis.job_id == job_id).delete()
+    db.query(MatchResult).filter(
+        MatchResult.job_id == job_id, MatchResult.task_id.is_(None)
+    ).delete(synchronize_session=False)
+    db.delete(job)
+    db.commit()
+    return {"ok": True, "id": job_id}
+
+
+@router.delete("")
+def batch_delete_jobs(
+    ids: str = Query(..., description="逗号分隔的岗位 ID 列表，如 ids=1,2,3"),
+    db: Session = Depends(get_db),
+):
+    """批量删除岗位。"""
+    try:
+        id_list = [int(x) for x in ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400, "ids 参数格式错误，应为逗号分隔的整数")
+    if not id_list:
+        raise HTTPException(400, "ids 为空")
+    found_ids = [r.id for r in db.query(Job).filter(Job.id.in_(id_list)).all()]
+    if not found_ids:
+        raise HTTPException(404, "未找到任何匹配的岗位")
+    db.query(JobAnalysis).filter(JobAnalysis.job_id.in_(found_ids)).delete(
+        synchronize_session=False
+    )
+    db.query(MatchResult).filter(
+        MatchResult.job_id.in_(found_ids), MatchResult.task_id.is_(None)
+    ).delete(synchronize_session=False)
+    db.query(Job).filter(Job.id.in_(found_ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True, "deleted": found_ids}
+
+
+class _BatchAnalyzeItem(BaseModel):
+    id: int
+    ok: bool
+    error: str = ""
+
+
+class _BatchAnalyzeRequest(BaseModel):
+    ids: list[int]
+
+
+@router.post("/analyze-batch")
+def analyze_batch(
+    req: _BatchAnalyzeRequest, db: Session = Depends(get_db)
+) -> list[_BatchAnalyzeItem]:
+    """批量重新解析岗位。LLM 调用并发跑（限 LLM_CONCURRENCY）。"""
+    settings = get_settings()
+    ids = list(dict.fromkeys(req.ids))  # 去重保序
+    if not ids:
+        return []
+    jobs = {j.id: j for j in db.query(Job).filter(Job.id.in_(ids)).all()}
+    max_c = max(1, min(settings.llm_concurrency, len(ids)))
+    results: dict[int, _BatchAnalyzeItem] = {jid: _BatchAnalyzeItem(id=jid, ok=False, error="未处理") for jid in ids}
+
+    def _do(jid: int):
+        job = jobs.get(jid)
+        if job is None:
+            return jid, None, "岗位不存在"
+        hints = {
+            "company_name": job.company_name,
+            "job_title": job.job_title,
+            "city": job.city,
+            "salary": job.salary,
+        }
+        try:
+            profile = job_agent.run(job.jd_text, hints)
+            return jid, profile, None
+        except Exception as e:  # noqa: BLE001
+            return jid, None, str(e)
+
+    with ThreadPoolExecutor(max_workers=max_c) as pool:
+        futures = {pool.submit(_do, jid): jid for jid in ids}
+        for fut in as_completed(futures):
+            jid, profile, err = fut.result()
+            if err is not None:
+                results[jid] = _BatchAnalyzeItem(id=jid, ok=False, error=err)
+                continue
+            try:
+                job = jobs[jid]
+                _apply_analysis(job, profile, db)
+                results[jid] = _BatchAnalyzeItem(id=jid, ok=True)
+            except Exception as e:  # noqa: BLE001
+                results[jid] = _BatchAnalyzeItem(id=jid, ok=False, error=str(e))
+    return [results[i] for i in ids]

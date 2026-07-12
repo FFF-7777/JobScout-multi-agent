@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, computed } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import type { UploadRequestOptions } from "element-plus";
 import { api, type Job } from "@/api";
 import { useAppStore } from "@/stores/app";
@@ -14,6 +14,12 @@ const splitBatch = ref(false);
 const jobUrl = ref("");
 const loading = ref(false);
 const jobs = ref<Job[]>([]);
+const selectedIds = ref<number[]>([]);
+// 行级 loading：行 ID -> 是否在解析
+const analyzingIds = ref<Set<number>>(new Set());
+
+const hasSelected = computed(() => selectedIds.value.length > 0);
+const selectedCount = computed(() => selectedIds.value.length);
 
 async function refresh() {
   try {
@@ -73,6 +79,96 @@ async function importUrl() {
   }
 }
 
+async function reanalyzeOne(job: Job) {
+  analyzingIds.value.add(job.id);
+  try {
+    const [res] = await api.batchAnalyzeJobs([job.id]);
+    if (res?.ok) {
+      ElMessage.success(`岗位 ${job.id} 已重新解析`);
+    } else {
+      ElMessage.error(`岗位 ${job.id} 解析失败：${res?.error || "未知错误"}`);
+    }
+    await refresh();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "重新解析失败");
+  } finally {
+    analyzingIds.value.delete(job.id);
+  }
+}
+
+async function reanalyzeSelected() {
+  if (!hasSelected.value) return;
+  const ids = [...selectedIds.value];
+  loading.value = true;
+  try {
+    const res = await api.batchAnalyzeJobs(ids);
+    const ok = res.filter((r) => r.ok).length;
+    const fail = res.length - ok;
+    if (fail === 0) {
+      ElMessage.success(`已重新解析 ${ok} 个岗位`);
+    } else {
+      ElMessage.warning(`完成 ${ok} 个，失败 ${fail} 个`);
+    }
+    await refresh();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "批量重新解析失败");
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function deleteOne(job: Job) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除岗位「${job.company_name || "（无）"} · ${job.job_title || "（无）"}」吗？`,
+      "删除岗位",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  loading.value = true;
+  try {
+    await api.deleteJob(job.id);
+    ElMessage.success("已删除");
+    selectedIds.value = selectedIds.value.filter((x) => x !== job.id);
+    await refresh();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "删除失败");
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function deleteSelected() {
+  if (!hasSelected.value) return;
+  const ids = [...selectedIds.value];
+  try {
+    await ElMessageBox.confirm(
+      `确定删除已选中的 ${ids.length} 个岗位吗？`,
+      "批量删除",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  loading.value = true;
+  try {
+    const res = await api.batchDeleteJobs(ids);
+    ElMessage.success(`已删除 ${res.deleted.length} 个岗位`);
+    selectedIds.value = [];
+    await refresh();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "批量删除失败");
+  } finally {
+    loading.value = false;
+  }
+}
+
+function onSelectionChange(rows: Job[]) {
+  selectedIds.value = rows.map((r) => r.id);
+}
+
 function startAnalyze() {
   if (!store.resumeId) {
     ElMessage.warning("请先在「简历画像」页解析简历");
@@ -92,7 +188,7 @@ onMounted(refresh);
 <template>
   <div class="page">
     <div class="page-title">岗位导入</div>
-    <div class="page-sub">支持粘贴单个 / 批量 JD、上传 Excel · CSV，或通过岗位链接自动抓取。</div>
+    <div class="page-sub">支持粘贴单个 / 批量 JD、上传 Excel · CSV，或通过岗位链接自动抓取。勾选后支持单条 / 批量删除与重新解析。</div>
 
     <div class="card">
       <el-input v-model="jdText" type="textarea" :rows="7" placeholder="粘贴岗位 JD…（批量粘贴可勾选下方拆分）" />
@@ -114,9 +210,31 @@ onMounted(refresh);
     <div class="card">
       <div class="toolbar">
         <div class="section-h" style="margin: 0">待分析岗位（{{ jobs.length }}）</div>
-        <el-button type="primary" @click="startAnalyze">开始分析 →</el-button>
+        <div class="toolbar-right">
+          <span v-if="hasSelected" class="sel-hint">已选 {{ selectedCount }} 个</span>
+          <el-button :disabled="!hasSelected" :loading="loading" @click="reanalyzeSelected">
+            批量重新解析
+          </el-button>
+          <el-button
+            type="danger"
+            plain
+            :disabled="!hasSelected"
+            :loading="loading"
+            @click="deleteSelected"
+          >
+            批量删除
+          </el-button>
+          <el-button type="primary" @click="startAnalyze">开始分析 →</el-button>
+        </div>
       </div>
-      <el-table :data="jobs" style="width: 100%" empty-text="暂无岗位，请先导入">
+      <el-table
+        :data="jobs"
+        style="width: 100%"
+        empty-text="暂无岗位，请先导入"
+        @selection-change="onSelectionChange"
+        row-key="id"
+      >
+        <el-table-column type="selection" width="48" />
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="company_name" label="公司" min-width="140">
           <template #default="{ row }">{{ row.company_name || "（待解析）" }}</template>
@@ -132,6 +250,20 @@ onMounted(refresh);
             <span class="jd-prev">{{ row.jd_text?.slice(0, 40) }}…</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="analyzingIds.has(row.id)"
+              @click="reanalyzeOne(row)"
+            >
+              重新解析
+            </el-button>
+            <el-button link type="danger" size="small" @click="deleteOne(row)">删除</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </div>
   </div>
@@ -143,6 +275,18 @@ onMounted(refresh);
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sel-hint {
+  color: #3a6ff7;
+  font-size: 13px;
+  font-weight: 600;
 }
 .hint {
   color: #8a94a6;

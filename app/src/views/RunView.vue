@@ -218,18 +218,23 @@ function progressPercent(step: AgentRun): number {
   return step.progress || 0;
 }
 
-// 把 4 个节点拼成一条总进度：step 1-4 各占 25%，节点内 0-100 映射
+// 各节点按真实耗时占比加权（Resume 很轻、Match 最重、Report 次之），
+// 避免「前 50% 很快、后 50% 等很久」的错觉。
+const STEP_WEIGHTS: Record<string, number> = {
+  "Resume Agent": 5,
+  "Job Agent": 15,
+  "Match Agent": 55,
+  "Report Agent": 25,
+};
+// 把 4 个节点按权重拼成一条总进度：节点内 0-100 映射 × 权重
 const overallProgress = computed(() => {
   if (!steps.value.length) return 0;
-  const completedNodes = steps.value.filter(
-    (s) => s.status === "success" || s.status === "failed"
-  ).length;
-  const runningNode = steps.value.find((s) => s.status === "running");
-  const baseFromDone = completedNodes * 25;
-  if (runningNode) {
-    return Math.min(99, baseFromDone + Math.round((progressPercent(runningNode) / 100) * 25));
+  let acc = 0;
+  for (const s of steps.value) {
+    const w = STEP_WEIGHTS[s.agent_name] ?? 0;
+    acc += (w * progressPercent(s)) / 100;
   }
-  return Math.min(100, baseFromDone);
+  return Math.min(100, Math.round(acc));
 });
 
 const overallLabel = computed(() => {
@@ -245,14 +250,29 @@ const totalElapsedSec = computed(() => {
   return Math.round((nowTick.value - taskStartedAt.value) / 1000);
 });
 
-// 剩余时间 = 当前 running 节点的 eta_seconds 之和 + 后续未跑节点的预估（用 done 节点平均 * 默认 6s 兜底）
-const totalEtaSec = computed(() => {
-  const runningStep = steps.value.find((s) => s.status === "running");
-  if (runningStep) {
-    return runningStep.eta_seconds || 0;
+// 关键解耦：只要 Match Agent 已经产出结果（进度>0），就允许用户查看推荐结果，
+// 不必等 Report Agent 完成。报告可在结果页按需生成。
+const matchStep = computed(() => steps.value.find((s) => s.agent_name === "Match Agent"));
+const hasMatchResults = computed(() => (matchStep.value?.progress ?? 0) > 0);
+
+// 剩余时间范围（基于 P50/P90）：用 Match Agent 节点的 eta_low/eta_high
+const totalEtaRange = computed(() => {
+  const m = matchStep.value;
+  if (m && m.status === "running") {
+    return { low: m.eta_low, high: m.eta_high };
   }
-  return 0;
+  return null;
 });
+
+function fmtEtaRange(low: number, high: number): string {
+  if (!low && !high) return "估算中…";
+  const lm = Math.ceil(low / 60);
+  const hm = Math.ceil(high / 60);
+  if (lm >= 1 || hm >= 1) {
+    return lm === hm ? `约 ${lm} 分钟` : `约 ${lm}~${hm} 分钟`;
+  }
+  return `约 ${Math.max(1, Math.ceil(low))}~${Math.ceil(high)} 秒`;
+}
 
 onMounted(async () => {
   if (store.taskId) {
@@ -296,7 +316,8 @@ onUnmounted(stopPoll);
         </div>
         <div class="stat" v-if="!isFinished(status)">
           <span class="stat-label">预计剩余</span>
-          <span class="stat-value">{{ fmtDuration(totalEtaSec) }}</span>
+          <span class="stat-value" v-if="totalEtaRange && (totalEtaRange.low > 0 || totalEtaRange.high > 0)">{{ fmtEtaRange(totalEtaRange.low, totalEtaRange.high) }}</span>
+          <span class="stat-value" v-else>估算中…</span>
         </div>
       </div>
       <div style="display: flex; gap: 12px">
@@ -338,11 +359,14 @@ onUnmounted(stopPoll);
         </el-button>
         <el-button
           type="primary"
-          :disabled="!isFinished(status)"
+          :disabled="!hasMatchResults"
           @click="router.push('/results')"
         >
           查看推荐结果 →
         </el-button>
+        <span v-if="running && hasMatchResults" class="running-hint">
+          匹配进行中，结果持续生成，可先查看已有结果
+        </span>
       </div>
     </div>
 
@@ -389,14 +413,31 @@ onUnmounted(stopPoll);
           </div>
           <div class="tl-meta">
             <span>已耗时 {{ fmtDuration(stepElapsedMs(s) / 1000) }}</span>
-            <span v-if="s.status === 'running' && s.eta_seconds > 0">
-              · 预计剩余 {{ fmtDuration(s.eta_seconds) }}
+            <span v-if="s.status === 'running' && (s.eta_low > 0 || s.eta_high > 0)">
+              · 预计剩余 {{ fmtEtaRange(s.eta_low, s.eta_high) }}
             </span>
+            <span v-else-if="s.status === 'running'">· 预计剩余 估算中…</span>
             <span v-if="s.status === 'success' && s.finished_at && s.started_at">
               · 共 {{ fmtDuration((parseBackendTime(s.finished_at) - parseBackendTime(s.started_at)) / 1000) }}
             </span>
           </div>
           <div class="tl-summary">{{ s.summary || "—" }}</div>
+          <template v-if="s.agent_name === 'Match Agent' && s.status === 'running'">
+            <div class="tl-counts">
+              <span>已完成 <b>{{ s.completed_items }}</b></span>
+              <span v-if="s.failed_items > 0" class="bad">失败 <b>{{ s.failed_items }}</b></span>
+              <span>排队 <b>{{ Math.max(0, s.total_items - s.completed_items - s.failed_items) }}</b></span>
+            </div>
+            <el-collapse v-if="s.in_flight_items && s.in_flight_items.length" class="tl-inflight">
+              <el-collapse-item :title="`正在并发分析（${s.in_flight_items.length}）`">
+                <ul class="inflight-list">
+                  <li v-for="it in s.in_flight_items" :key="it.job_id">
+                    • {{ it.job_title || ('岗位 ' + it.job_id) }}
+                  </li>
+                </ul>
+              </el-collapse-item>
+            </el-collapse>
+          </template>
           <div v-if="s.error_message && !isCancelled(s)" class="tl-error">错误：{{ s.error_message }}</div>
           <div v-else-if="isCancelled(s)" class="tl-cancelled">用户已中断此节点</div>
           <el-collapse v-if="s.output_json">
@@ -442,6 +483,36 @@ onUnmounted(stopPoll);
   font-size: 18px;
   color: #3a6ff7;
   font-variant-numeric: tabular-nums;
+}
+.running-hint {
+  font-size: 12px;
+  color: #3a6ff7;
+  background: #eef3ff;
+  padding: 4px 10px;
+  border-radius: 10px;
+}
+.tl-counts {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #5a6472;
+}
+.tl-counts b {
+  color: #1f2733;
+}
+.tl-counts .bad {
+  color: #e64545;
+}
+.tl-inflight {
+  margin-top: 6px;
+}
+.inflight-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: #5a6472;
+  line-height: 1.7;
 }
 .overall {
   margin-top: 16px;

@@ -19,6 +19,9 @@ def _enrich(row: MatchResult, db: Session) -> MatchResultOut:
         out.job_title = job.job_title
         out.city = job.city
         out.salary = job.salary
+    out.cache_hit = bool(row.cache_hit)
+    if row.detail_json:
+        out.report = row.detail_json.get("report")
     return out
 
 

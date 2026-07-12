@@ -50,6 +50,10 @@ def init_db() -> None:
     _migrate_agent_runs_timestamps()
     _migrate_agent_runs_eta()
     _migrate_jobs_analyze_mode()
+    _migrate_jobs_ocr_fields()
+    _migrate_resume_cache()
+    _migrate_agent_runs_progress_fields()
+    _migrate_match_results_cache()
 
 
 def _enable_wal() -> None:
@@ -127,3 +131,86 @@ def _migrate_jobs_analyze_mode() -> None:
             conn.execute(
                 text("ALTER TABLE jobs ADD COLUMN analyze_mode VARCHAR(16) DEFAULT 'summary'")
             )
+
+
+def _migrate_jobs_ocr_fields() -> None:
+    """为 jobs 补 OCR 三层数据 / 解析状态列，幂等。
+
+    cleaned_jd_text（清洗后正文）/ jd_summary（列表预览摘要）/
+    parse_status（pending/parsing/success/failed）/ parse_error（失败原因）。
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "jobs" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("jobs")}
+    needed = {
+        "cleaned_jd_text": "ALTER TABLE jobs ADD COLUMN cleaned_jd_text TEXT DEFAULT ''",
+        "jd_summary": "ALTER TABLE jobs ADD COLUMN jd_summary VARCHAR(512) DEFAULT ''",
+        "parse_status": "ALTER TABLE jobs ADD COLUMN parse_status VARCHAR(16) DEFAULT 'pending'",
+        "parse_error": "ALTER TABLE jobs ADD COLUMN parse_error VARCHAR(512) DEFAULT ''",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in columns:
+                conn.execute(text(ddl))
+
+
+def _migrate_resume_cache() -> None:
+    """为 resumes 补画像缓存列（content_hash / parsed_at / profile_version），幂等。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "resumes" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("resumes")}
+    needed = {
+        "content_hash": "ALTER TABLE resumes ADD COLUMN content_hash VARCHAR(32) DEFAULT ''",
+        "parsed_at": "ALTER TABLE resumes ADD COLUMN parsed_at TIMESTAMP",
+        "profile_version": "ALTER TABLE resumes ADD COLUMN profile_version INTEGER DEFAULT 0",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in columns:
+                conn.execute(text(ddl))
+
+
+def _migrate_agent_runs_progress_fields() -> None:
+    """为 agent_runs 补进度/并发可视化列（ETA 范围、计数、在途岗位），幂等。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "agent_runs" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("agent_runs")}
+    needed = {
+        "eta_low": "ALTER TABLE agent_runs ADD COLUMN eta_low INTEGER DEFAULT 0",
+        "eta_high": "ALTER TABLE agent_runs ADD COLUMN eta_high INTEGER DEFAULT 0",
+        "total_items": "ALTER TABLE agent_runs ADD COLUMN total_items INTEGER DEFAULT 0",
+        "completed_items": "ALTER TABLE agent_runs ADD COLUMN completed_items INTEGER DEFAULT 0",
+        "failed_items": "ALTER TABLE agent_runs ADD COLUMN failed_items INTEGER DEFAULT 0",
+        "in_flight_items": "ALTER TABLE agent_runs ADD COLUMN in_flight_items JSON",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in columns:
+                conn.execute(text(ddl))
+
+
+def _migrate_match_results_cache() -> None:
+    """为 match_results 补缓存键/命中列，幂等。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "match_results" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("match_results")}
+    needed = {
+        "cache_key": "ALTER TABLE match_results ADD COLUMN cache_key VARCHAR(64)",
+        "cache_hit": "ALTER TABLE match_results ADD COLUMN cache_hit BOOLEAN DEFAULT 0",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in columns:
+                conn.execute(text(ddl))

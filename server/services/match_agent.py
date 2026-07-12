@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 
 import prompts
@@ -15,6 +16,10 @@ from schemas.job import JobProfile
 from schemas.match import DimensionScores, MatchResultModel
 from schemas.resume import ResumeProfile
 from services import llm_service
+
+# Prompt / 融合逻辑版本号。作为匹配缓存键的一部分：
+# 改了匹配提示词或评分融合权重时递增，使旧缓存自动失效、触发重新匹配。
+PROMPT_VERSION = "1"
 
 WEIGHTS = {
     "tech_stack": 0.30,
@@ -60,6 +65,28 @@ def _level_of(score: float) -> str:
     return "D"
 
 
+def build_match_cache_key(
+    resume_profile: dict,
+    job_profile: dict,
+    model: str,
+    mode: str,
+    prompt_version: str = PROMPT_VERSION,
+) -> str:
+    """匹配结果缓存键：相同 简历画像 + 岗位画像 + 模型 + 分析模式 + Prompt版本 时复用。
+
+    返回 32 位十六进制串（sha256 前 32 字符）。
+    """
+    payload = {
+        "resume": resume_profile,
+        "job": job_profile,
+        "model": model,
+        "mode": mode,
+        "prompt_version": prompt_version,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 def _clamp_score(v: object) -> float:
     """把任意模型输出安全地截断到 [0, 100]，避免异常分导致 Pydantic 校验失败。"""
     try:
@@ -81,11 +108,25 @@ def _recommendation_of(level: str) -> str:
     }[level]
 
 
+def build_hard_fail_result(hard_failures: list[str], job: JobProfile) -> MatchResultModel:
+    """硬条件预筛不通过时，不调 LLM，直接给出 0 分 / D 级结果。"""
+    return MatchResultModel(
+        score=0.0,
+        level="D",
+        dimensions=DimensionScores(),
+        matched_points=[],
+        missing_points=[f"硬条件不符：{f}" for f in hard_failures],
+        recommendation="不符合硬条件，不建议投递",
+        risk_notes=list(hard_failures),
+    )
+
+
 def run(
     resume: ResumeProfile,
     job: JobProfile,
     *,
     resume_text: str | None = None,
+    model_role: str = "reasoning",
 ) -> MatchResultModel:
     """匹配评分。
 
@@ -105,6 +146,7 @@ def run(
             resume_profile=resume_block,
             job_profile=json.dumps(job.model_dump(), ensure_ascii=False),
         ),
+        model_role=model_role,
     )
 
     llm_dims = llm_out.get("dimensions", {}) or {}

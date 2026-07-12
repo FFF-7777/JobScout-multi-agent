@@ -1,4 +1,4 @@
-"""报告接口：查询、Markdown 下载、Excel 导出。"""
+"""报告接口：查询、按需生成、Markdown 下载、Excel 导出。"""
 from __future__ import annotations
 
 import io
@@ -6,13 +6,129 @@ import io
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Job, MatchResult, Report
+from config import get_settings
+from database import SessionLocal, get_db
+from models import Job, JobAnalysis, MatchResult, Report, Resume
+from schemas.job import JobProfile
+from schemas.match import MatchResultModel
 from schemas.report import ReportOut
+from schemas.resume import ResumeProfile
+from services import report_agent
+from services.concurrency import bounded_map
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
+
+
+class ReportGenerateRequest(BaseModel):
+    match_result_ids: list[int] = Field(default_factory=list)
+    # standard：代码模板，立即生成，不调 LLM；deep：调 LLM 生成深度报告
+    mode: str = "standard"
+
+
+@router.post("/generate-batch")
+def generate_reports_batch(req: ReportGenerateRequest, db: Session = Depends(get_db)):
+    """按需为选中的匹配结果生成报告。
+
+    - standard：纯代码模板（匹配点 / 缺口 / 风险 / 面试重点），立即返回，无 LLM 成本。
+    - deep：调用 Report Agent（LLM）生成含面试题 / BOSS 话术等的深度报告。
+    """
+    if not req.match_result_ids:
+        raise HTTPException(400, "match_result_ids 不能为空")
+    mode = (req.mode or "standard").lower()
+    if mode not in ("standard", "deep"):
+        raise HTTPException(400, "mode 仅支持 standard / deep")
+
+    rows = db.query(MatchResult).filter(MatchResult.id.in_(req.match_result_ids)).all()
+    if not rows:
+        raise HTTPException(404, "未找到对应的匹配结果")
+
+    # 预加载所需数据（复用已落库的结构化画像，避免重新跑 Resume/Job Agent）
+    payloads: list[dict] = []
+    for r in rows:
+        resume = db.get(Resume, r.resume_id)
+        job = db.get(Job, r.job_id)
+        if resume is None or job is None or not resume.profile_json or not r.detail_json:
+            continue
+        resume_profile = ResumeProfile.model_validate(resume.profile_json)
+        ja = db.query(JobAnalysis).filter(JobAnalysis.job_id == r.job_id).first()
+        if ja and ja.analysis_json:
+            job_profile = JobProfile.model_validate(ja.analysis_json)
+        else:
+            job_profile = JobProfile(
+                company_name=job.company_name or "",
+                job_title=job.job_title or "",
+                city=job.city or "",
+                salary=job.salary or "",
+            )
+        match = MatchResultModel.model_validate(r.detail_json)
+        payloads.append(
+            {
+                "result_id": r.id,
+                "resume_profile": resume_profile,
+                "job_profile": job_profile,
+                "match": match,
+                "resume_text": resume.raw_text,
+            }
+        )
+    if not payloads:
+        raise HTTPException(400, "无可生成报告的匹配结果（缺少简历画像或匹配详情）")
+
+    def _persist(result_id: int, report_dict: dict) -> None:
+        s = SessionLocal()
+        try:
+            row = s.get(MatchResult, result_id)
+            if row and row.detail_json is not None:
+                detail = dict(row.detail_json)
+                detail["report"] = report_dict
+                row.detail_json = detail
+                s.commit()
+        finally:
+            s.close()
+
+    generated = 0
+    errors: list[dict] = []
+
+    if mode == "standard":
+        for p in payloads:
+            try:
+                report = report_agent.build_standard_job_report(p["job_profile"], p["match"])
+                _persist(p["result_id"], report)
+                generated += 1
+            except Exception as e:  # noqa: BLE001
+                errors.append({"result_id": p["result_id"], "error": str(e)})
+    else:  # deep
+        def _deep_worker(p):
+            return report_agent.run(
+                p["resume_profile"],
+                p["job_profile"],
+                p["match"],
+                resume_text=p["resume_text"][:8000] if p["resume_text"] else None,
+                model_role="fast",
+            )
+
+        def _deep_on_result(p, rep, err):
+            if err is not None or rep is None:
+                errors.append({"result_id": p["result_id"], "error": str(err)})
+                return
+            _persist(p["result_id"], rep.model_dump())
+
+        bounded_map(
+            payloads,
+            _deep_worker,
+            max_concurrency=get_settings().report_agent_concurrency,
+            on_result=_deep_on_result,
+        )
+        generated = len(payloads) - len(errors)
+
+    return {
+        "mode": mode,
+        "requested": len(req.match_result_ids),
+        "generated": generated,
+        "errors": errors,
+    }
 
 
 @router.get("", response_model=list[ReportOut])

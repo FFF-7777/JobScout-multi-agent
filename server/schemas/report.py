@@ -33,7 +33,15 @@ class AgentRunOut(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     eta_seconds: int = 0
+    # ETA 范围（基于 P50/P90）：前端展示「约 X~Y 分钟」
+    eta_low: int = 0
+    eta_high: int = 0
     current_item: str = ""
+    # 单岗位并发可视化计数
+    total_items: int = 0
+    completed_items: int = 0
+    failed_items: int = 0
+    in_flight_items: list | None = None
 
     class Config:
         from_attributes = True

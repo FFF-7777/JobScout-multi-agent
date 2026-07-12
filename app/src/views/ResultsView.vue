@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api, type MatchResult } from "@/api";
@@ -14,6 +14,10 @@ const loading = ref(false);
 const cityFilter = ref<string>("");
 const levelFilter = ref<string>("");
 const skillFilter = ref<string>("");
+const selectedIds = ref<number[]>([]);
+const generating = ref(false);
+const taskStatus = ref<string>("");
+let pollTimer: number | null = null;
 
 // 全屏大卡 modal 状态（点行弹出，点遮罩关闭）
 const detailJobId = ref<number | null>(null);
@@ -27,14 +31,47 @@ function closeDetail() {
   detailJobId.value = null;
 }
 
-async function load() {
+const matchRunning = computed(
+  () => taskStatus.value === "running" || taskStatus.value === ""
+);
+
+async function loadResults() {
+  if (!store.taskId) return;
   loading.value = true;
   try {
-    results.value = await api.listResults(store.taskId || undefined);
+    results.value = await api.listResults(store.taskId);
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "加载失败");
   } finally {
     loading.value = false;
+  }
+}
+
+async function pollTask() {
+  if (!store.taskId) return;
+  try {
+    const t = await api.getTask(store.taskId);
+    taskStatus.value = t.status;
+  } catch {
+    /* 忽略轮询错误 */
+  }
+}
+
+async function startPolling() {
+  await pollTask();
+  await loadResults();
+  // 匹配还在跑：持续轮询，结果会随 Match Agent 完成而实时增长
+  if (taskStatus.value === "running" || taskStatus.value === "") {
+    pollTimer = window.setInterval(async () => {
+      await pollTask();
+      await loadResults();
+      if (taskStatus.value !== "running" && taskStatus.value !== "") {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
+    }, 2500);
   }
 }
 
@@ -52,9 +89,33 @@ const filtered = computed(() =>
   })
 );
 
+async function genReports(mode: "standard" | "deep") {
+  const ids = selectedIds.value.length
+    ? selectedIds.value
+    : results.value.map((r) => r.id);
+  if (!ids.length) {
+    ElMessage.warning("没有可生成报告的岗位");
+    return;
+  }
+  generating.value = true;
+  try {
+    const res = await api.generateReports(ids, mode);
+    ElMessage.success(
+      `已生成 ${res.generated} 个${mode === "deep" ? "深度" : "基础"}报告` +
+        (res.errors.length ? `（${res.errors.length} 个失败）` : "")
+    );
+    await loadResults();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "生成失败");
+  } finally {
+    generating.value = false;
+  }
+}
+
 function exportExcel() {
   const rid = store.taskId;
-  api.listReports()
+  api
+    .listReports()
     .then((reps) => {
       const rep = reps.find((x) => x.task_id === rid) || reps[0];
       if (!rep) {
@@ -66,13 +127,26 @@ function exportExcel() {
     .catch(() => ElMessage.error("导出失败"));
 }
 
-onMounted(load);
+onMounted(startPolling);
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer);
+});
 </script>
 
 <template>
   <div class="page">
     <div class="page-title">岗位推荐结果</div>
     <div class="page-sub">按匹配度排序，支持城市 / 等级 / 技术栈筛选，点击行查看岗位详情。</div>
+
+    <el-alert
+      v-if="matchRunning && results.length > 0"
+      type="primary"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 12px"
+      :title="`匹配进行中，结果持续生成（已完成 ${results.length} 个）`"
+      description="下方列表会随 Match Agent 完成自动刷新；报告可在本页按需生成，无需等待全部岗位结束。"
+    />
 
     <div class="card filters">
       <el-select v-model="cityFilter" clearable placeholder="城市" style="width: 140px">
@@ -83,6 +157,22 @@ onMounted(load);
       </el-select>
       <el-input v-model="skillFilter" clearable placeholder="技术栈关键词" style="width: 200px" />
       <div style="flex: 1" />
+      <span v-if="selectedIds.length" class="sel-hint">已选 {{ selectedIds.length }} 个</span>
+      <el-button
+        :loading="generating"
+        :disabled="results.length === 0"
+        @click="genReports('standard')"
+      >
+        生成基础报告{{ selectedIds.length ? "（选中）" : "（全部）" }}
+      </el-button>
+      <el-button
+        type="primary"
+        :loading="generating"
+        :disabled="results.length === 0"
+        @click="genReports('deep')"
+      >
+        生成深度报告{{ selectedIds.length ? "（选中）" : "（全部）" }}
+      </el-button>
       <el-button :type="results.length > 0 ? 'primary' : 'plain'" @click="exportExcel" :disabled="results.length === 0">
         导出 Excel
       </el-button>
@@ -93,11 +183,14 @@ onMounted(load);
         v-loading="loading"
         :data="filtered"
         style="width: 100%"
+        row-key="id"
         empty-text="暂无结果，请先在 Agent 执行页运行分析"
         @row-click="(row: MatchResult) => openDetail(row.job_id)"
         :row-style="{ cursor: 'pointer' }"
+        @selection-change="(rows: MatchResult[]) => (selectedIds = rows.map((r) => r.id))"
         :default-sort="{ prop: 'score', order: 'descending' }"
       >
+        <el-table-column type="selection" width="46" />
         <el-table-column prop="company_name" label="公司" min-width="140" />
         <el-table-column prop="job_title" label="岗位" min-width="160" />
         <el-table-column prop="city" label="城市" width="90" />
@@ -111,6 +204,14 @@ onMounted(load);
         <el-table-column label="等级" width="80">
           <template #default="{ row }">
             <span :class="['grade-tag', 'grade-' + row.level]">{{ row.level }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="报告" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.report" :type="row.report.mode === 'deep' ? 'success' : 'info'" size="small">
+              {{ row.report.mode === 'deep' ? '深度' : '基础' }}
+            </el-tag>
+            <span v-else class="muted">未生成</span>
           </template>
         </el-table-column>
         <el-table-column prop="recommendation" label="建议" width="120" />
@@ -151,6 +252,15 @@ onMounted(load);
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
+}
+.sel-hint {
+  font-size: 12px;
+  color: #3a6ff7;
+}
+.muted {
+  color: #b8bfca;
+  font-size: 12px;
 }
 
 /* === 分析结果大卡 modal === */

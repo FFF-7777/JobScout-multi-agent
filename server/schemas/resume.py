@@ -21,6 +21,9 @@ class ResumeProfile(BaseModel):
     projects: list[ProjectItem] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
+    # 硬条件预筛用（供 Match 前的规则判断，不消耗 LLM）
+    graduation_year: int | None = None  # 毕业年份，如 2027
+    available_days_per_week: int | None = None  # 每周可实习天数
 
 
 class ResumeParseRequest(BaseModel):

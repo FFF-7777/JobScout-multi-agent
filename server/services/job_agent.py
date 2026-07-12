@@ -1,9 +1,12 @@
 """Job Agent：解析岗位 JD -> JobProfile。"""
 from __future__ import annotations
 
+import re
+
 import prompts
 from schemas.job import JobProfile
 from services import llm_service
+from services.jd_preprocessor import build_jd_preview, clean_ocr_jd
 
 _VALID_RISKS = {"外包", "培训", "销售", "运营", "助教", "不相关"}
 
@@ -15,6 +18,8 @@ _STR_FIELDS = (
     "education",
     "experience",
     "job_type",
+    "internship_duration",
+    "jd_summary",
 )
 _LIST_FIELDS = (
     "required_skills",
@@ -23,6 +28,44 @@ _LIST_FIELDS = (
     "requirements",
     "risk_tags",
 )
+
+
+def _to_int_or_none(v: object) -> int | None:
+    """把 LLM 返回的每周实习天数收敛为 int 或 None。"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    if isinstance(v, str):
+        m = re.search(r"\d+", v)
+        return int(m.group()) if m else None
+    return None
+
+
+def _to_int_list(v: object) -> list[int]:
+    """把毕业年份收敛为 int 列表（过滤非数字、去重保序）。"""
+    if not isinstance(v, list):
+        v = [v] if v is not None else []
+    out: list[int] = []
+    for x in v:
+        if isinstance(x, bool):
+            continue
+        if isinstance(x, int):
+            n = x
+        elif isinstance(x, float):
+            n = int(x)
+        elif isinstance(x, str):
+            m = re.search(r"\d{4}", x)
+            if not m:
+                continue
+            n = int(m.group())
+        else:
+            continue
+        if n not in out:
+            out.append(n)
+    return out
 
 
 def _sanitize_profile(data: object) -> dict:
@@ -46,12 +89,26 @@ def _sanitize_profile(data: object) -> dict:
             out[f] = [v]
         else:
             out[f] = []
+    # 实习相关数值字段
+    out["internship_days_per_week"] = _to_int_or_none(out.get("internship_days_per_week"))
+    out["graduation_years"] = _to_int_list(out.get("graduation_years"))
     return out
 
 
-def run(jd_text: str, hints: dict | None = None) -> JobProfile:
-    """hints 可包含来自表格的已知字段（company_name/city/salary 等）。"""
+def run(
+    jd_text: str,
+    hints: dict | None = None,
+    source: str = "",
+    *,
+    model_role: str = "fast",
+) -> JobProfile:
+    """hints 可包含来自表格的已知字段（company_name/city/salary 等）。
+
+    source == "ocr_image" 时，先用规则清洗器去噪，再交给 LLM 结构化。
+    """
     text = (jd_text or "").strip()
+    if source == "ocr_image":
+        text = clean_ocr_jd(text)
     prefix = ""
     if hints:
         known = {k: v for k, v in hints.items() if v}
@@ -63,6 +120,7 @@ def run(jd_text: str, hints: dict | None = None) -> JobProfile:
     data = llm_service.chat_json(
         prompts.JOB_SYSTEM,
         prompts.JOB_USER.format(jd_text=(prefix + text)[:8000]),
+        model_role=model_role,
     )
     data = _sanitize_profile(data)
     profile = JobProfile.model_validate(data)
@@ -73,4 +131,7 @@ def run(jd_text: str, hints: dict | None = None) -> JobProfile:
                 setattr(profile, field, hints[field])
     # 过滤非法风险标签
     profile.risk_tags = [t for t in profile.risk_tags if t in _VALID_RISKS]
+    # jd_summary 兜底：LLM 没给摘要时用结构化字段拼一段预览
+    if not profile.jd_summary.strip():
+        profile.jd_summary = build_jd_preview(profile)
     return profile

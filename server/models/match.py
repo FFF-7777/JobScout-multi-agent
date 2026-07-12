@@ -24,6 +24,9 @@ class MatchResult(Base):
     risk_notes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # 完整 MatchResult（含分维度分数）
     detail_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 命中缓存：相同 简历画像+岗位画像+模型+模式+Prompt版本 时跳过 LLM 复用
+    cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    cache_hit: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

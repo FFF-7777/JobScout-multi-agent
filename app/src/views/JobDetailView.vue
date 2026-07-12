@@ -66,7 +66,34 @@ const match = ref<MatchResult | null>(null);
 const loading = ref(true);
 
 const report = computed(() => match.value?.detail_json?.report ?? null);
+const reportMode = computed(() => (match.value?.detail_json?.report as any)?.mode ?? null);
+const isDeep = computed(() => reportMode.value === "deep");
 const dims = computed(() => match.value?.detail_json?.dimensions ?? null);
+/** 深度报告有 interview_questions；基础报告只有 interview_focus —— 统一成一份列表 */
+const interviewList = computed(() => {
+  const r = report.value as any;
+  if (!r) return [];
+  return r.interview_questions || r.interview_focus || [];
+});
+
+const genDeepBusy = ref(false);
+async function genDeep() {
+  if (!match.value?.id) return;
+  genDeepBusy.value = true;
+  try {
+    const res = await api.generateReports([match.value.id], "deep");
+    if (res.generated > 0) {
+      ElMessage.success("已生成深度报告");
+      await load();
+    } else if (res.errors?.length) {
+      ElMessage.error("深度报告生成失败：" + JSON.stringify(res.errors[0]));
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "生成失败");
+  } finally {
+    genDeepBusy.value = false;
+  }
+}
 
 const DIM_LABELS: Record<string, string> = {
   tech_stack: "技术栈匹配",
@@ -297,33 +324,57 @@ function gotoResults() {
           </div>
 
           <div v-if="report" class="sub-card primary">
-            <div class="sub-head">📌 投递建议</div>
+            <div class="sub-head">
+              📌 投递建议
+              <el-tag
+                size="small"
+                :type="isDeep ? 'success' : 'info'"
+                style="margin-left: 8px"
+              >
+                {{ isDeep ? '深度报告' : '基础报告' }}
+              </el-tag>
+              <el-button
+                v-if="!isDeep"
+                size="small"
+                type="primary"
+                plain
+                style="margin-left: auto"
+                :loading="genDeepBusy"
+                @click="genDeep"
+              >
+                🧠 生成深度报告
+              </el-button>
+            </div>
             <div class="rec-summary">
               <b>{{ report.conclusion }}</b>
               <span class="rec-divider">·</span>
               <span>{{ report.priority }}</span>
             </div>
-            <ul>
+            <ul v-if="report.reasons?.length">
               <li v-for="r in report.reasons" :key="r">{{ r }}</li>
             </ul>
           </div>
 
-          <div v-if="report" class="grid2">
-            <div class="sub-card">
-              <div class="sub-head">💬 面试可能问题</div>
-              <ol>
-                <li v-for="q in report.interview_questions" :key="q">{{ q }}</li>
-              </ol>
+          <div v-if="report && interviewList.length" class="sub-card">
+            <div class="sub-head">
+              {{ isDeep ? '💬 面试可能问题' : '🎯 面试准备重点' }}
             </div>
-            <div class="sub-card">
-              <div class="sub-head">🎤 项目讲解重点</div>
-              <ul>
-                <li v-for="q in report.project_talking_points" :key="q">{{ q }}</li>
-              </ul>
-            </div>
+            <ol>
+              <li v-for="q in interviewList" :key="q">{{ q }}</li>
+            </ol>
           </div>
 
-          <div v-if="report" class="grid2">
+          <div v-if="report && report.project_talking_points?.length" class="sub-card">
+            <div class="sub-head">🎤 项目讲解重点</div>
+            <ul>
+              <li v-for="q in report.project_talking_points" :key="q">{{ q }}</li>
+            </ul>
+          </div>
+
+          <div
+            v-if="report && (report.boss_greeting || report.hr_message)"
+            class="grid2"
+          >
             <div class="sub-card">
               <div class="sub-head">👋 BOSS 打招呼话术</div>
               <div class="quote">{{ report.boss_greeting }}</div>
@@ -492,6 +543,8 @@ function gotoResults() {
   font-weight: 700;
   color: #1f2733;
   margin-bottom: 10px;
+  display: flex;
+  align-items: center;
 }
 .empty-tip {
   color: #8a94a6;

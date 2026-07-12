@@ -14,6 +14,8 @@ export interface ResumeProfile {
   projects: ProjectItem[];
   strengths: string[];
   weaknesses: string[];
+  graduation_year?: number | null;
+  available_days_per_week?: number | null;
 }
 export interface Resume {
   id: number;
@@ -58,7 +60,13 @@ export interface AgentRun {
   output_json: any;
   error_message: string;
   eta_seconds: number;
+  eta_low: number;
+  eta_high: number;
   current_item: string;
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  in_flight_items: { job_id: number; job_title: string }[] | null;
 }
 export interface WorkflowTask {
   task_id: string;
@@ -77,6 +85,8 @@ export interface MatchResult {
   missing_points: string[];
   risk_notes: string[];
   detail_json: any;
+  cache_hit: boolean;
+  report: any;
   company_name: string;
   job_title: string;
   city: string;
@@ -189,6 +199,14 @@ export const api = {
       .then((r) => r.data),
   getResult: (id: number) =>
     http.get<MatchResult>(`/api/match/results/${id}`).then((r) => r.data),
+
+  generateReports: (match_result_ids: number[], mode: "standard" | "deep" = "standard") =>
+    http
+      .post<{ mode: string; requested: number; generated: number; errors: any[] }>(
+        "/api/reports/generate-batch",
+        { match_result_ids, mode }
+      )
+      .then((r) => r.data),
 
   listReports: () => http.get<ReportItem[]>("/api/reports").then((r) => r.data),
   getReport: (id: number) => http.get<ReportItem>(`/api/reports/${id}`).then((r) => r.data),

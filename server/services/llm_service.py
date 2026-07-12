@@ -52,6 +52,21 @@ def _get_client() -> OpenAI:
     return _client
 
 
+def _resolve_model(role: str) -> str:
+    """把模型角色映射成具体模型名；未配置时回退到全局 llm_model。
+
+    角色：fast（快速低成本）/ reasoning（强推理）/ vision（多模态兜底，预留）/ fallback（故障切换）。
+    """
+    s = get_settings()
+    mapping = {
+        "fast": s.llm_fast_model or s.llm_model,
+        "reasoning": s.llm_reasoning_model or s.llm_model,
+        "vision": s.llm_vision_model or s.llm_model,
+        "fallback": s.llm_fallback_model or s.llm_model,
+    }
+    return mapping.get(role, s.llm_model)
+
+
 def _with_retry(fn):
     """对网络错误与限流做指数退避重试；不可恢复错误直接抛出。"""
     delay = _BASE_DELAY
@@ -80,14 +95,19 @@ def _with_retry(fn):
     )
 
 
-def chat_text(system: str, user: str, temperature: float | None = None) -> str:
-    """普通文本对话。"""
+def chat_text(
+    system: str, user: str, temperature: float | None = None, model_role: str = "fast"
+) -> str:
+    """普通文本对话。model_role 决定用哪一档模型（默认 fast）。"""
     settings = get_settings()
     client = _get_client()
+    model = _resolve_model(model_role)
+    fallback = _resolve_model("fallback")
+    use_fallback = bool(fallback) and fallback != model
 
-    def _do() -> str:
+    def _do(use_model: str) -> str:
         resp = client.chat.completions.create(
-            model=settings.llm_model,
+            model=use_model,
             temperature=settings.llm_temperature if temperature is None else temperature,
             messages=[
                 {"role": "system", "content": system},
@@ -96,18 +116,35 @@ def chat_text(system: str, user: str, temperature: float | None = None) -> str:
         )
         return (resp.choices[0].message.content or "").strip()
 
-    return _with_retry(_do)
+    try:
+        return _with_retry(lambda: _do(model))
+    except LLMOutputError:
+        if use_fallback:
+            return _with_retry(lambda: _do(fallback))
+        raise
 
 
-def chat_json(system: str, user: str, temperature: float | None = None) -> dict[str, Any]:
-    """要求模型输出 JSON 对象，返回解析后的 dict。失败重试一次。"""
+def chat_json(
+    system: str,
+    user: str,
+    temperature: float | None = None,
+    model_role: str = "fast",
+) -> dict[str, Any]:
+    """要求模型输出 JSON 对象，返回解析后的 dict。失败重试一次。
+
+    model_role：fast / reasoning / vision / fallback，决定用哪一档模型。
+    主模型持续失败时，若配置了 llm_fallback_model 且不同，则用兜底模型再试一次。
+    """
     settings = get_settings()
     client = _get_client()
+    model = _resolve_model(model_role)
+    fallback = _resolve_model("fallback")
+    use_fallback = bool(fallback) and fallback != model
 
-    def _call(extra_hint: str = "") -> str:
+    def _call(use_model: str, extra_hint: str = "") -> str:
         def _do() -> str:
             resp = client.chat.completions.create(
-                model=settings.llm_model,
+                model=use_model,
                 temperature=settings.llm_temperature
                 if temperature is None
                 else temperature,
@@ -121,16 +158,36 @@ def chat_json(system: str, user: str, temperature: float | None = None) -> dict[
 
         return _with_retry(_do)
 
-    raw = _call()
+    raw = _call(model)
     parsed = _try_parse(raw)
     if parsed is not None:
         return parsed
 
     # 重试一次，强调只输出 JSON
-    raw = _call("\n\n请严格只输出一个合法的 JSON 对象，不要包含任何解释或 markdown 代码块标记。")
+    raw = _call(model, "\n\n请严格只输出一个合法的 JSON 对象，不要包含任何解释或 markdown 代码块标记。")
     parsed = _try_parse(raw)
     if parsed is not None:
         return parsed
+
+    if use_fallback:
+        # 主模型两次都失败 -> 用兜底模型整段再试一次
+        try:
+            raw = _call(fallback)
+        except LLMOutputError:
+            raw = ""
+        parsed = _try_parse(raw)
+        if parsed is not None:
+            return parsed
+        try:
+            raw = _call(
+                fallback,
+                "\n\n请严格只输出一个合法的 JSON 对象，不要包含任何解释或 markdown 代码块标记。",
+            )
+        except LLMOutputError:
+            raw = ""
+        parsed = _try_parse(raw)
+        if parsed is not None:
+            return parsed
 
     raise LLMOutputError(f"模型未返回可解析的 JSON：{raw[:500]}")
 

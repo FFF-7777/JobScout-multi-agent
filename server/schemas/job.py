@@ -16,12 +16,18 @@ class JobProfile(BaseModel):
     education: str = ""
     experience: str = ""
     job_type: str = ""
+    # 实习相关（非实习岗位留空 / None）
+    internship_days_per_week: int | None = None
+    internship_duration: str = ""
+    graduation_years: list[int] = Field(default_factory=list)
     required_skills: list[str] = Field(default_factory=list)
     preferred_skills: list[str] = Field(default_factory=list)
     responsibilities: list[str] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
     # 风险标签：外包 / 培训 / 销售 / 运营 / 助教 / 不相关
     risk_tags: list[str] = Field(default_factory=list)
+    # 80~150 字岗位摘要，用于列表预览（不含收藏/举报等页面噪声）
+    jd_summary: str = ""
 
 
 class JobImportTextRequest(BaseModel):
@@ -45,7 +51,9 @@ class JobOut(BaseModel):
     education: str
     experience: str
     jd_text: str
+    jd_summary: str = ""
     job_url: str
+    parse_status: str = "pending"
     analyze_mode: str = "summary"
     created_at: datetime | None = None
     analysis: dict | None = None

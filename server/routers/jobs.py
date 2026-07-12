@@ -189,8 +189,11 @@ def analyze_job(job_id: int, db: Session = Depends(get_db)):
         "salary": job.salary,
     }
     try:
-        profile = job_agent.run(job.jd_text, hints)
+        profile = job_agent.run(job.jd_text, hints, source=job.source)
     except Exception:
+        job.parse_status = "failed"
+        job.parse_error = "模型返回异常"
+        db.commit()
         raise HTTPException(502, "岗位分析失败：模型返回异常，请稍后重试")
     _apply_analysis(job, profile, db)
     db.refresh(job)
@@ -203,6 +206,15 @@ def _apply_analysis(job: Job, profile, db: Session) -> None:
     job.job_title = job.job_title or profile.job_title
     job.city = job.city or profile.city
     job.salary = job.salary or profile.salary
+    job.education = job.education or profile.education
+    job.experience = job.experience or profile.experience
+    # 列表预览摘要（LLM jd_summary，为空时 job_agent 已用结构化字段兜底拼接）
+    job.jd_summary = profile.jd_summary
+    # OCR 来源：保留清洗后正文，便于详情页对照原始 OCR
+    if job.source == "ocr_image":
+        job.cleaned_jd_text = clean_ocr_jd(job.jd_text)
+    job.parse_status = "success"
+    job.parse_error = ""
     existing = db.query(JobAnalysis).filter(JobAnalysis.job_id == job.id).first()
     if existing is None:
         existing = JobAnalysis(job_id=job.id)
@@ -323,7 +335,7 @@ def analyze_batch(
             "salary": job.salary,
         }
         try:
-            profile = job_agent.run(job.jd_text, hints)
+            profile = job_agent.run(job.jd_text, hints, source=job.source)
             return jid, profile, None
         except Exception as e:  # noqa: BLE001
             return jid, None, str(e)

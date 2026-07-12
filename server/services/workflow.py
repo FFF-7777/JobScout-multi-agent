@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from datetime import datetime
 from typing import TypedDict
@@ -22,6 +24,7 @@ from schemas.match import MatchResultModel
 from schemas.report import JobReport
 from schemas.resume import ResumeProfile
 from services import job_agent, match_agent, report_agent, resume_agent
+from services.precheck import precheck_job
 from services.concurrency import AbortFlow, bounded_map
 
 AGENT_STEPS = [
@@ -77,7 +80,13 @@ def _update_run(
     error: str = "",
     progress: int | None = None,
     eta_seconds: int | None = None,
+    eta_low: int | None = None,
+    eta_high: int | None = None,
     current_item: str | None = None,
+    total_items: int | None = None,
+    completed_items: int | None = None,
+    failed_items: int | None = None,
+    in_flight_items: list | None = None,
     start: bool = False,
     finish: bool = False,
 ) -> None:
@@ -96,8 +105,20 @@ def _update_run(
             run.progress = progress
         if eta_seconds is not None:
             run.eta_seconds = eta_seconds
+        if eta_low is not None:
+            run.eta_low = eta_low
+        if eta_high is not None:
+            run.eta_high = eta_high
         if current_item is not None:
             run.current_item = current_item
+        if total_items is not None:
+            run.total_items = total_items
+        if completed_items is not None:
+            run.completed_items = completed_items
+        if failed_items is not None:
+            run.failed_items = failed_items
+        if in_flight_items is not None:
+            run.in_flight_items = in_flight_items
         if summary:
             run.summary = summary
         if output is not None:
@@ -132,6 +153,29 @@ def _calc_eta(task_id: str, agent_name: str, total: int, done: int) -> int:
         return max(0, int(per * remain))
     finally:
         db.close()
+
+
+def _calc_eta_range(durations: list[float], total: int, done: int, concurrency: int) -> tuple[int, int]:
+    """基于已完成单岗位耗时样本，给出剩余时间的 P50~P90 范围（秒）。
+
+    前几个样本不足时返回 (0, 0)，前端据此显示「估算中…」。
+    单岗位耗时波动大（输入长度 / 限流重试 / 网络），故展示区间而非精确秒数。
+    """
+    remaining = max(0, total - done)
+    if remaining == 0:
+        return 0, 0
+    if not durations:
+        return 0, 0
+    import math
+    from statistics import median
+
+    s = sorted(durations)
+    p50 = median(s)
+    p90 = s[min(len(s) - 1, int(len(s) * 0.9))]
+    waves = math.ceil(remaining / max(1, concurrency))
+    low = int(waves * p50)
+    high = int(waves * max(p50, p90))
+    return low, high
 
 
 # --------- 各节点 ---------
@@ -170,12 +214,15 @@ def node_parse_resume(state: JobScoutState) -> JobScoutState:
             raise ValueError(f"简历 {state['resume_id']} 不存在")
         state["resume_text"] = resume.raw_text
         _update_run(task_id, "Resume Agent", progress=50, current_item="Resume Agent 正在解析画像…")
-        # 已有画像则复用，否则调用 Agent
+        # 已有画像则复用，否则调用 Agent（fast 档）
         if resume.profile_json:
             profile = ResumeProfile.model_validate(resume.profile_json)
         else:
-            profile = resume_agent.run(resume.raw_text)
+            profile = resume_agent.run(resume.raw_text, model_role="fast")
             resume.profile_json = profile.model_dump()
+            resume.content_hash = resume_agent.compute_hash(resume.raw_text)
+            resume.parsed_at = datetime.utcnow()
+            resume.profile_version = (resume.profile_version or 0) + 1
             db.commit()
         state["resume_profile"] = profile.model_dump()
         _update_run(
@@ -231,7 +278,7 @@ def _parse_single_job(jid: int):
             "city": job.city,
             "salary": job.salary,
         }
-        return job_agent.run(job.jd_text, hints)
+        return job_agent.run(job.jd_text, hints, source=job.source, model_role="fast")
     finally:
         db.close()
 
@@ -321,7 +368,7 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
     bounded_map(
         job_ids,
         _parse_single_job,
-        max_concurrency=settings.llm_concurrency,
+        max_concurrency=settings.job_agent_concurrency,
         on_result=_on_result,
     )
 
@@ -358,18 +405,6 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
     return state
 
 
-def _match_single(jid_and_profile):
-    """worker：在子线程跑 LLM（match_agent.run）。返回 (jid, match_or_None, err)。"""
-    jid, profile_dict = jid_and_profile
-    try:
-        job = JobProfile.model_validate(profile_dict)
-        # 简历对象在子线程只读（不动 DB），由 worker 入口传入
-        # 真正的 resume 序列化由 _on_match_result 闭包提供
-        return _match_single  # type: ignore[return-value]
-    except Exception as e:  # noqa: BLE001
-        return jid, None, str(e)
-
-
 def node_match_jobs(state: JobScoutState) -> JobScoutState:
     task_id = state["task_id"]
     _update_run(
@@ -380,6 +415,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         start=True,
         current_item="准备开始匹配评分…",
         summary="准备开始匹配评分",
+        total_items=len(state.get("jobs_parsed", [])),
     )
     resume = ResumeProfile.model_validate(state["resume_profile"])
     jobs = state.get("jobs_parsed", [])
@@ -388,35 +424,102 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     settings = get_settings()
     done = 0
 
+    # 并发可视化 / 计时所需的线程安全容器
+    lock = threading.Lock()
+    start_times: dict[int, float] = {}
+    in_flight: set[int] = set()
+    cached_jids: set[int] = set()
+    counts = {"failed": 0}
+    durations: list[float] = []
+    title_map = {it["job_id"]: (it["profile"] or {}).get("job_title", "") for it in jobs}
+
+    def _find_cached_match(key: str):
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(MatchResult)
+                .filter(MatchResult.cache_key == key)
+                .order_by(MatchResult.id.desc())
+                .first()
+            )
+            if row and row.detail_json:
+                return MatchResultModel.model_validate(row.detail_json)
+        finally:
+            db.close()
+        return None
+
     def _worker(item):
         # 实际跑 LLM；resume / mode 通过二次查 ORM 拿（避免在 jobs_parsed dict 里塞冗余字段）
+        jid = item["job_id"]
         job = JobProfile.model_validate(item["profile"])
         db = SessionLocal()
         try:
-            j = db.get(Job, item["job_id"])
+            j = db.get(Job, jid)
             mode = (j.analyze_mode if j and j.analyze_mode else "summary")
         finally:
             db.close()
+        model = settings.llm_reasoning_model or settings.llm_model
+        key = match_agent.build_match_cache_key(
+            resume.model_dump(), job.model_dump(), model, mode
+        )
+        item["_cache_key"] = key
+        # ── 硬条件预筛（规则，不消耗 LLM）──
+        pre = precheck_job(resume, job)
+        if not pre["passed"]:
+            # 不通过直接给出 0 分 / D 级结果，跳过 LLM 调用，省成本
+            return match_agent.build_hard_fail_result(pre["hard_failures"], job)
+        # ── 命中缓存：相同 简历+岗位+模型+模式+Prompt版本 时跳过 LLM ──
+        cached = _find_cached_match(key)
+        if cached is not None:
+            with lock:
+                cached_jids.add(jid)
+            return cached
+        with lock:
+            start_times[jid] = time.monotonic()
+            in_flight.add(jid)
         resume_text = state.get("resume_text") if mode == "full" else None
-        return match_agent.run(resume, job, resume_text=resume_text)
+        return match_agent.run(resume, job, resume_text=resume_text, model_role="reasoning")
+
+    def _emit_progress(jid, done_n, label):
+        low, high = _calc_eta_range(durations, total, done_n, settings.match_agent_concurrency)
+        with lock:
+            flight = [
+                {"job_id": j, "job_title": title_map.get(j, "")} for j in in_flight
+            ]
+            failed = counts["failed"]
+        _update_run(
+            task_id,
+            "Match Agent",
+            progress=int(done_n / total * 100) if total else 100,
+            summary=f"已匹配 {done_n}/{total}" + (f"（{failed} 个失败）" if failed else ""),
+            current_item=label,
+            eta_seconds=_calc_eta(task_id, "Match Agent", total, done_n),
+            eta_low=low,
+            eta_high=high,
+            total_items=total,
+            completed_items=done_n,
+            failed_items=failed,
+            in_flight_items=flight,
+        )
 
     def _on_result(item, match, err):
         nonlocal done
-        done += 1
         jid = item["job_id"]
-        progress = int(done / total * 100) if total else 100
-        label = f"正在匹配岗位 {jid}（{done}/{total}）"
+        now = time.monotonic()
+        with lock:
+            st = start_times.pop(jid, None)
+            in_flight.discard(jid)
+            if st is not None:
+                durations.append(now - st)
+        label = f"正在匹配岗位 {jid}（{done + 1}/{total}）"
         if _is_aborted(task_id, "Match Agent"):
             raise _AbortedByUser()
         if err is not None or match is None:
+            with lock:
+                counts["failed"] += 1
             state.setdefault("errors", []).append(f"match_jobs job {jid}: {err}")
-            _update_run(
-                task_id,
-                "Match Agent",
-                progress=progress,
-                summary=f"已匹配 {done}/{total}（岗位 {jid} 失败：{err}）",
-                current_item=label + " — 失败",
-            )
+            done += 1
+            _emit_progress(jid, done, label + " — 失败")
             return
         db = SessionLocal()
         try:
@@ -431,6 +534,8 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
                 recommendation=match.recommendation,
                 risk_notes=match.risk_notes,
                 detail_json=match.model_dump(),
+                cache_key=item.get("_cache_key"),
+                cache_hit=(jid in cached_jids),
             )
             db.add(row)
             db.commit()
@@ -440,20 +545,13 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             db.rollback()
         finally:
             db.close()
-        eta = _calc_eta(task_id, "Match Agent", total, done)
-        _update_run(
-            task_id,
-            "Match Agent",
-            progress=progress,
-            summary=f"已匹配 {done}/{total}",
-            current_item=label,
-            eta_seconds=eta,
-        )
+        done += 1
+        _emit_progress(jid, done, label)
 
     bounded_map(
         jobs,
         _worker,
-        max_concurrency=settings.llm_concurrency,
+        max_concurrency=settings.match_agent_concurrency,
         on_result=_on_result,
     )
 
@@ -468,6 +566,12 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             progress=100,
             summary="所有岗位匹配均失败",
             eta_seconds=0,
+            eta_low=0,
+            eta_high=0,
+            total_items=total,
+            completed_items=0,
+            failed_items=counts["failed"],
+            in_flight_items=[],
             current_item="",
             finish=True,
         )
@@ -477,9 +581,17 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             "Match Agent",
             status="success",
             progress=100,
-            summary=f"完成 {len(results)} 个岗位评分，最高 {top} 分",
+            summary=f"完成 {len(results)} 个岗位评分，最高 {top} 分"
+            + (f"（{counts['failed']} 个失败）" if counts["failed"] else "")
+            + (f"（{len(cached_jids)} 个命中缓存）" if cached_jids else ""),
             output={"count": len(results)},
             eta_seconds=0,
+            eta_low=0,
+            eta_high=0,
+            total_items=total,
+            completed_items=total,
+            failed_items=counts["failed"],
+            in_flight_items=[],
             current_item="",
             finish=True,
         )
@@ -487,6 +599,16 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
 
 
 def node_generate_report(state: JobScoutState) -> JobScoutState:
+    """自动报告生成（不阻塞用户看匹配结果）。
+
+    策略由 REPORT_AUTO_POLICY 控制：
+    - none：不自动生成，全部按需（用户可在结果页点「生成报告」）
+    - all ：为所有岗位生成
+    - top_k（默认）：仅对匹配度最高的 N 个岗位生成
+
+    自动生成的报告默认是「基础报告」（纯代码模板，立即生成，零 LLM 调用）；
+    深度 AI 报告（含面试题 / BOSS 话术等）通过 POST /api/reports/generate-batch 按需触发。
+    """
     task_id = state["task_id"]
     _update_run(
         task_id,
@@ -494,102 +616,84 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
         status="running",
         progress=0,
         start=True,
-        current_item="准备开始生成报告…",
-        summary="准备开始生成报告",
+        current_item="准备生成报告…",
+        summary="准备生成报告",
     )
+    settings = get_settings()
+    policy = (settings.report_auto_policy or "top_k").lower()
     resume = ResumeProfile.model_validate(state["resume_profile"])
     parsed_map = {it["job_id"]: it["profile"] for it in state.get("jobs_parsed", [])}
     match_results = state.get("match_results", [])
-    total = len(match_results)
-    items: list[dict] = []
-    settings = get_settings()
-    done = 0
 
-    def _worker(mr):
-        job = JobProfile.model_validate(_parsed_map_safe(parsed_map, mr["job_id"]))
-        match = MatchResultModel.model_validate(mr["match"])
-        db = SessionLocal()
-        try:
-            j = db.get(Job, mr["job_id"])
-            mode = (j.analyze_mode if j and j.analyze_mode else "summary")
-        finally:
-            db.close()
-        resume_text = state.get("resume_text") if mode == "full" else None
-        return report_agent.run(resume, job, match, resume_text=resume_text)
-
-    def _on_result(mr_payload, report, err):
-        nonlocal done
-        done += 1
-        jid = mr_payload["job_id"]
-        result_id = mr_payload["result_id"]
-        progress = int(done / total * 100) if total else 100
-        label = f"正在生成报告 {jid}（{done}/{total}）"
-        if _is_aborted(task_id, "Report Agent"):
-            raise _AbortedByUser()
-        if err is not None or report is None:
-            state.setdefault("errors", []).append(f"generate_report job {jid}: {err}")
-            _update_run(
-                task_id,
-                "Report Agent",
-                progress=progress,
-                summary=f"已生成 {done}/{total}（岗位 {jid} 失败：{err}）",
-                current_item=label + " — 失败",
-            )
-            return
-        db = SessionLocal()
-        try:
-            job = JobProfile.model_validate(_parsed_map_safe(parsed_map, jid))
-            match = MatchResultModel.model_validate(mr_payload["match"])
-            row = db.get(MatchResult, result_id)
-            if row and row.detail_json is not None:
-                detail = dict(row.detail_json)
-                detail["report"] = report.model_dump()
-                row.detail_json = detail
-                db.commit()
-            items.append({"job": job, "match": match, "report": report})
-        except Exception as e:  # noqa: BLE001
-            state.setdefault("errors", []).append(f"generate_report commit job {jid}: {e}")
-            db.rollback()
-        finally:
-            db.close()
-        eta = _calc_eta(task_id, "Report Agent", total, done)
+    if policy == "none":
         _update_run(
             task_id,
             "Report Agent",
-            progress=progress,
-            summary=f"已生成 {done}/{total}",
-            current_item=label,
-            eta_seconds=eta,
-        )
-
-    bounded_map(
-        match_results,
-        _worker,
-        max_concurrency=settings.llm_concurrency,
-        on_result=_on_result,
-    )
-
-    if not items:
-        _update_run(
-            task_id,
-            "Report Agent",
-            status="failed",
+            status="success",
             progress=100,
-            summary="所有岗位报告生成均失败",
+            summary="已跳过自动报告（策略=none），可手动生成",
             eta_seconds=0,
             current_item="",
             finish=True,
         )
         return state
 
-    markdown = report_agent.build_markdown(resume, items)
+    if policy == "all":
+        targets = match_results
+    else:  # top_k
+        targets = match_results[: max(1, settings.report_auto_top_k)]
+
+    if not targets:
+        _update_run(
+            task_id,
+            "Report Agent",
+            status="success",
+            progress=100,
+            summary="无匹配结果，跳过报告",
+            eta_seconds=0,
+            current_item="",
+            finish=True,
+        )
+        return state
+
+    items: list[dict] = []
+    done = 0
+    n = len(targets)
+    for mr in targets:
+        jid = mr["job_id"]
+        job = JobProfile.model_validate(_parsed_map_safe(parsed_map, jid))
+        match = MatchResultModel.model_validate(mr["match"])
+        # 基础报告：纯代码模板，立即生成，不调用 LLM
+        report = report_agent.build_standard_job_report(job, match)
+        db = SessionLocal()
+        try:
+            row = db.get(MatchResult, mr["result_id"])
+            if row and row.detail_json is not None:
+                detail = dict(row.detail_json)
+                detail["report"] = report
+                row.detail_json = detail
+                db.commit()
+            items.append({"job": job, "match": match, "report": report})
+        finally:
+            db.close()
+        done += 1
+        _update_run(
+            task_id,
+            "Report Agent",
+            progress=int(done / n * 100) if n else 100,
+            summary=f"已生成基础报告 {done}/{n}",
+            current_item=f"报告 {done}/{n}",
+        )
+
+    # 汇总 Markdown（基础报告）落库，供「报告导出」页查看 / Excel 导出
+    markdown = report_agent.build_standard_markdown(resume, items)
     db = SessionLocal()
     try:
         report_row = Report(
             resume_id=state["resume_id"],
             task_id=task_id,
-            title=f"岗位分析报告 - {resume.name or '候选人'}",
-            summary=f"共分析 {len(items)} 个岗位",
+            title=f"岗位分析报告（Top {len(items)} 基础版） - {resume.name or '候选人'}",
+            summary=f"共 {len(items)} 个岗位（基础报告，未调用 LLM）",
             markdown_content=markdown,
         )
         db.add(report_row)
@@ -601,8 +705,8 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
             "Report Agent",
             status="success",
             progress=100,
-            summary=f"生成报告，覆盖 {len(items)} 个岗位",
-            output={"report_id": report_row.id},
+            summary=f"生成 {len(items)} 个基础报告（Top {settings.report_auto_top_k}）",
+            output={"report_id": report_row.id, "mode": "standard"},
             eta_seconds=0,
             current_item="",
             finish=True,

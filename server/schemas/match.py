@@ -45,6 +45,9 @@ class MatchResultOut(BaseModel):
     missing_points: list[str] | None = None
     risk_notes: list[str] | None = None
     detail_json: dict | None = None
+    cache_hit: bool = False
+    # 已生成的报告（基础报告代码模板 / 深度 AI 报告），来自 detail_json.report
+    report: dict | None = None
     created_at: datetime | None = None
     # 冗余岗位信息，方便前端表格展示
     company_name: str | None = None

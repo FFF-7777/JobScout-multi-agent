@@ -1,6 +1,8 @@
 """简历相关接口。"""
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,23 @@ router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 _MAX_UPLOAD = 10 * 1024 * 1024  # 10 MiB 上传上限
 
 
+def _build_profile(resume: Resume, db: Session, text: str) -> Resume:
+    """内容哈希命中则复用缓存画像，跳过 LLM；否则解析并写回缓存字段。
+
+    缓存 key = resume_text 的 sha256 前 16 位。同一份简历反复上传/重新解析时不重复消耗模型。
+    """
+    h = resume_agent.compute_hash(text)
+    if resume.profile_json and resume.content_hash == h:
+        return resume  # 命中缓存
+    profile = resume_agent.run(text, model_role="fast")
+    resume.profile_json = profile.model_dump()
+    resume.content_hash = h
+    resume.parsed_at = datetime.utcnow()
+    resume.profile_version = (resume.profile_version or 0) + 1
+    db.commit()
+    return resume
+
+
 @router.post("/upload", response_model=ResumeOut)
 async def upload_resume(
     file: UploadFile = File(...), db: Session = Depends(get_db)
@@ -32,6 +51,8 @@ async def upload_resume(
     db.add(resume)
     db.commit()
     db.refresh(resume)
+    resume = _build_profile(resume, db, text)
+    db.refresh(resume)
     return resume
 
 
@@ -41,23 +62,21 @@ def parse_resume(req: ResumeParseRequest, db: Session = Depends(get_db)):
     if not req.text.strip():
         raise HTTPException(400, "简历文本为空")
     resume = Resume(filename=req.filename, raw_text=req.text)
-    profile = resume_agent.run(req.text)
-    resume.profile_json = profile.model_dump()
     db.add(resume)
     db.commit()
+    db.refresh(resume)
+    resume = _build_profile(resume, db, req.text)
     db.refresh(resume)
     return resume
 
 
 @router.post("/{resume_id}/parse", response_model=ResumeOut)
 def parse_existing(resume_id: int, db: Session = Depends(get_db)):
-    """对已上传的简历触发画像解析。"""
+    """对已上传的简历触发画像解析（内容不变则命中缓存，跳过 LLM）。"""
     resume = db.get(Resume, resume_id)
     if resume is None:
         raise HTTPException(404, "简历不存在")
-    profile = resume_agent.run(resume.raw_text)
-    resume.profile_json = profile.model_dump()
-    db.commit()
+    resume = _build_profile(resume, db, resume.raw_text)
     db.refresh(resume)
     return resume
 

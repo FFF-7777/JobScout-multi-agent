@@ -20,8 +20,15 @@ class Job(Base):
     salary: Mapped[str] = mapped_column(String(64), default="")
     education: Mapped[str] = mapped_column(String(64), default="")
     experience: Mapped[str] = mapped_column(String(64), default="")
+    # 三层数据：jd_text=原始（OCR/抓取原文，追溯用）；cleaned_jd_text=规则清洗后正文
     jd_text: Mapped[str] = mapped_column(Text, default="")
+    cleaned_jd_text: Mapped[str] = mapped_column(Text, default="")
+    # 结构化摘要，用于列表预览（80~150 字，无页面噪声）
+    jd_summary: Mapped[str] = mapped_column(String(512), default="")
     job_url: Mapped[str] = mapped_column(String(512), default="")
+    # 解析状态：pending / parsing / success / failed
+    parse_status: Mapped[str] = mapped_column(String(16), default="pending")
+    parse_error: Mapped[str] = mapped_column(String(512), default="")
     # 分析模式：summary（默认，只用画像 JSON）/ full（额外喂简历全文，更准但慢）
     analyze_mode: Mapped[str] = mapped_column(String(16), default="summary")
     created_at: Mapped[datetime] = mapped_column(

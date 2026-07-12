@@ -17,6 +17,7 @@ def run(
     match: MatchResultModel,
     *,
     resume_text: str | None = None,
+    model_role: str = "fast",
 ) -> JobReport:
     """生成单岗位投递建议 + 面试准备。
 
@@ -35,8 +36,81 @@ def run(
             job_profile=json.dumps(job.model_dump(), ensure_ascii=False),
             match_result=json.dumps(match.model_dump(), ensure_ascii=False),
         ),
+        model_role=model_role,
     )
     return JobReport.model_validate(data)
+
+
+def build_standard_job_report(job: JobProfile, match: MatchResultModel) -> dict:
+    """基础报告：纯代码模板，立即生成，不调用 LLM。
+
+    只基于 Match Agent 已有的结构化结果组织，不重新计算分数、不编造事实。
+    用于自动 Top-K 报告与「生成基础报告」按需场景；深度 AI 报告请调 run()。
+    """
+    interview_focus = [
+        f"准备说明你在「{p}」方面的实际项目证据（做了什么、用了什么技术、结果如何）"
+        for p in (match.matched_points or [])[:3]
+    ]
+    if not interview_focus:
+        interview_focus = [
+            "回顾简历中与岗位要求最贴近的项目，准备讲清你做了什么、用了什么技术、结果如何"
+        ]
+    return {
+        "conclusion": match.recommendation,
+        "priority": f"匹配度 {match.score} 分（{match.level} 级）",
+        "matched_points": match.matched_points or [],
+        "missing_points": match.missing_points or [],
+        "risk_notes": match.risk_notes or [],
+        "interview_focus": interview_focus,
+        "mode": "standard",
+    }
+
+
+def build_standard_markdown(
+    resume: ResumeProfile,
+    items: list[dict],
+) -> str:
+    """把多个岗位的基础报告（代码模板）汇总为 Markdown。
+
+    items: [{"job": JobProfile, "match": MatchResultModel, "report": dict}]
+    """
+    lines: list[str] = []
+    lines.append(f"# JobScout 岗位分析报告（基础版）— {resume.name or '候选人'}\n")
+    lines.append("> 本报告由代码模板即时生成（未调用 LLM）。如需面试题 / BOSS 话术等深度内容，可对岗位点「生成深度报告」。\n")
+    lines.append("## 岗位推荐排序\n")
+    lines.append("| 排名 | 公司 | 岗位 | 城市 | 薪资 | 匹配度 | 等级 | 建议 |")
+    lines.append("| ---: | --- | --- | --- | --- | ---: | :--: | --- |")
+    for i, it in enumerate(items, 1):
+        j: JobProfile = it["job"]
+        m: MatchResultModel = it["match"]
+        lines.append(
+            f"| {i} | {j.company_name} | {j.job_title} | {j.city} | {j.salary} "
+            f"| {m.score} | {m.level} | {m.recommendation} |"
+        )
+    lines.append("")
+
+    lines.append("## 岗位详细分析\n")
+    for i, it in enumerate(items, 1):
+        j: JobProfile = it["job"]
+        m: MatchResultModel = it["match"]
+        r: dict = it["report"]
+        lines.append(f"### {i}. {j.company_name} — {j.job_title}（{m.level} / {m.score} 分）\n")
+        lines.append(f"**推荐结论**：{r.get('conclusion', '')}　|　**优先级**：{r.get('priority', '')}\n")
+        if r.get("matched_points"):
+            lines.append("**匹配点：**")
+            lines.extend(f"- {p}" for p in r["matched_points"])
+        if r.get("missing_points"):
+            lines.append("\n**缺口分析：**")
+            lines.extend(f"- {p}" for p in r["missing_points"])
+        if r.get("risk_notes"):
+            lines.append("\n**风险提醒：**")
+            lines.extend(f"- {p}" for p in r["risk_notes"])
+        if r.get("interview_focus"):
+            lines.append("\n**面试准备重点：**")
+            lines.extend(f"- {p}" for p in r["interview_focus"])
+        lines.append("\n---\n")
+
+    return "\n".join(lines)
 
 
 def build_markdown(

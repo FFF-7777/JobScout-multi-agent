@@ -91,7 +91,13 @@ docker compose up --build
 | --- | --- | --- |
 | `DASHSCOPE_API_KEY` | 阿里云百炼 API Key（**必填**） | — |
 | `LLM_BASE_URL` | OpenAI 兼容端点 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `LLM_MODEL` | 模型名称 | `qwen-plus`（可切 `qwen-max` / `qwen3.7-plus`） |
+| `LLM_MODEL` | 默认模型（档位未单独配置时的回退值） | `qwen-plus`（可切 `qwen-max` / `qwen3.7-plus`） |
+| `LLM_FAST_MODEL` | 快速低成本档（Resume / Job / Report Agent） | 留空则回退 `LLM_MODEL` |
+| `LLM_REASONING_MODEL` | 强推理档（Match Agent） | 留空则回退 `LLM_MODEL` |
+| `LLM_VISION_MODEL` | 多模态兜底档（预留，当前未启用） | 留空则回退 `LLM_MODEL` |
+| `LLM_FALLBACK_MODEL` | 故障切换档（主模型持续失败时重试一次） | 留空则关闭兜底 |
+| `LLM_TIMEOUT` | 单次 LLM 调用超时（秒） | `120` |
+| `LLM_TEMPERATURE` | 采样温度 | `0.2` |
 | `DATABASE_URL` | 数据库连接 | `sqlite:///./internscout.db` |
 | `CORS_ORIGINS` | 允许跨域来源 | `*` |
 | `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` | 百度 OCR 凭证（截图导入用） | — |

@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     baidu_ocr_api_key: str = ""
     baidu_ocr_secret_key: str = ""
 
+    # OCR 服务商选择：baidu / tencent（控制图片导入走哪家）
+    ocr_provider: str = "baidu"
+    # 腾讯云 OCR（备选）
+    tencent_ocr_secret_id: str = ""
+    tencent_ocr_secret_key: str = ""
+
     @property
     def has_api_key(self) -> bool:
         return bool(self.dashscope_api_key and self.dashscope_api_key.strip())

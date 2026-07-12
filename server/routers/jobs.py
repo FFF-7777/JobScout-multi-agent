@@ -15,6 +15,17 @@ from models import Job, JobAnalysis, MatchResult
 from schemas.job import JobImportTextRequest, JobImportUrlRequest, JobOut
 from services import baidu_ocr, document_parser, job_agent, url_fetcher
 
+# 延迟导入 OCR 服务商模块，运行时根据 settings.ocr_provider 选择
+def _get_ocr_service():
+    from config import get_settings
+
+    provider = (get_settings().ocr_provider or "baidu").lower()
+    if provider == "tencent":
+        from services import tencent_ocr
+
+        return tencent_ocr, "tencent"
+    return baidu_ocr, "baidu"
+
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 _SPLIT_RE = re.compile(r"\n\s*(?:-{3,}|={3,}|#{2,}|\n)\s*\n")
@@ -91,7 +102,7 @@ def import_url(req: JobImportUrlRequest, db: Session = Depends(get_db)):
 async def import_images(
     files: list[UploadFile] = File(...), db: Session = Depends(get_db)
 ):
-    """通过百度 OCR 识别图片中的 JD 文本并导入岗位。
+    """通过 OCR 识别图片中的 JD 文本并导入岗位（服务商由 OCR_PROVIDER 决定：baidu/tencent）。
 
     支持 PNG / JPEG / JPG / BMP / WebP，单次最多 20 张，每张上限 10MB。
     返回成功创建的岗位列表（按文件顺序），识别失败的跳过并在响应中提示。
@@ -112,9 +123,13 @@ async def import_images(
             raise HTTPException(413, f"文件 {f.filename} 过大（上限 {_MAX_UPLOAD // 1024 // 1024} MB）")
         images.append((data, f.filename or "image"))
 
-    # 调用百度 OCR 批量识别
+    # 根据 OCR_PROVIDER 选择服务商（百度 / 腾讯）批量识别
     settings = get_settings()
-    ocr_results = await baidu_ocr.recognize_images_batch(images)
+    ocr_service, provider = _get_ocr_service()
+    try:
+        ocr_results = await ocr_service.recognize_images_batch(images)
+    except ValueError as e:
+        raise HTTPException(400, f"OCR 识别失败：{e}") from e
 
     created: list[dict] = []
     errors: list[str] = []

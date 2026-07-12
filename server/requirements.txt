@@ -13,3 +13,4 @@ python-docx==1.1.2
 pandas==2.2.3
 openpyxl==3.1.5
 httpx==0.28.1
+tencentcloud-sdk-python-ocr==3.1.130

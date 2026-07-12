@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import type { UploadRequestOptions } from "element-plus";
 import { api, type Job } from "@/api";
 import { useAppStore } from "@/stores/app";
+import JobDetailView from "@/views/JobDetailView.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -218,19 +219,34 @@ function onSelectionChange(rows: Job[]) {
   store.setSelectedJobIds(selectedIds.value);
 }
 
+// 全屏大卡片 modal 状态（点 JD 弹出，点卡片外关闭）
+const detailJobId = ref<number | null>(null);
+const detailOpen = ref(false);
+function openDetail(jobId: number) {
+  detailJobId.value = jobId;
+  detailOpen.value = true;
+}
+function closeDetail() {
+  detailOpen.value = false;
+  detailJobId.value = null;
+}
+// 给 JobDetailView 用的 close
+function detailClose() {
+  closeDetail();
+}
+
 function onCellClick(row: Job, _column: any, _cell: any, event: MouseEvent) {
-  // 点击 selection 列（checkbox）时不跳详情
+  // 点击 selection 列（checkbox）时不弹详情
   const target = event.target as HTMLElement;
   if (target.closest(".el-table__column--selection") || target.closest(".el-checkbox")) {
     return;
   }
-  // 点击操作列时不跳详情
+  // 点击操作列时不弹详情
   if (target.closest(".el-table__fixed-right")) {
     return;
   }
-  // 记录 window 滚动位置，回来时恢复
-  sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
-  router.push(`/jobs/${row.id}`);
+  // 弹全屏大卡片 modal（不走路由）
+  openDetail(row.id);
 }
 
 async function restoreScroll() {
@@ -390,6 +406,22 @@ onMounted(refresh);
         </el-table-column>
       </el-table>
     </div>
+
+    <!-- 岗位详情大卡片 modal：覆盖全页，点遮罩（卡片外空白）关闭 -->
+    <teleport to="body">
+      <transition name="detail-fade">
+        <div
+          v-if="detailOpen"
+          class="detail-mask"
+          @mousedown.self="closeDetail"
+        >
+          <div class="detail-modal" @mousedown.stop>
+            <button class="detail-close" @click="closeDetail" title="关闭">×</button>
+            <JobDetailView v-if="detailJobId !== null" :key="detailJobId" @close="closeDetail" />
+          </div>
+        </div>
+      </transition>
+    </teleport>
   </div>
 </template>
 
@@ -465,6 +497,84 @@ onMounted(refresh);
 }
 .url-row .el-input {
   flex: 1;
+}
+
+/* === 岗位详情全屏大卡 modal === */
+.detail-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(20, 30, 50, 0.45);     /* 卡片外的灰色遮罩 */
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-start;                /* 顶部对齐，让大卡从顶部开始 */
+  justify-content: center;
+  padding: 28px 20px;
+  overflow-y: auto;
+}
+.detail-modal {
+  position: relative;
+  width: 100%;
+  max-width: 980px;                       /* 大卡宽度 */
+  background: transparent;                /* 大卡背景由 JobDetailView 自带 */
+  border-radius: 16px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  /* 关键：让 .page 内部自带的 padding 略减小 */
+  padding: 0;
+  align-self: flex-start;
+  margin-bottom: 40px;
+}
+.detail-modal :deep(.page) {
+  max-width: 100%;
+  padding: 0;
+}
+.detail-modal :deep(.back-btn) {
+  display: none;                          /* modal 模式下隐藏「← 返回」按钮（用我们的 X） */
+}
+.detail-modal :deep(.el-loading-mask) {
+  border-radius: 16px;
+}
+.detail-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1f2733;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+  transition: transform 0.15s, background 0.15s;
+}
+.detail-close:hover {
+  background: #f5f7fb;
+  transform: scale(1.08);
+}
+
+/* 进入/退出动画 */
+.detail-fade-enter-active,
+.detail-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.detail-fade-enter-from,
+.detail-fade-leave-to {
+  opacity: 0;
+}
+.detail-fade-enter-active .detail-modal,
+.detail-fade-leave-active .detail-modal {
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.detail-fade-enter-from .detail-modal {
+  transform: translateY(20px) scale(0.98);
+}
+.detail-fade-leave-to .detail-modal {
+  transform: translateY(10px) scale(0.99);
 }
 
 /* 让 JD 单元格可点击：cursor 已经在 .jd-prev 设置了 */

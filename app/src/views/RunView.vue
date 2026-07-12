@@ -300,7 +300,33 @@ onUnmounted(stopPoll);
         </div>
       </div>
       <div style="display: flex; gap: 12px">
-        <el-button type="primary" :loading="running" @click="start">开始分析</el-button>
+        <!-- 状态机：
+             - 未开始：「开始分析」primary（蓝），「查看推荐」disabled
+             - 分析中：「开始分析」loading 灰，「中断任务」danger（红），「查看推荐」disabled
+             - 已完成（success / completed_with_errors / cancelled / failed）：
+               「重新开始」plain（次要），「查看推荐结果」primary（亮蓝引导下一步） -->
+        <el-button
+          v-if="!running && !isFinished(status)"
+          type="primary"
+          :loading="running"
+          @click="start"
+        >
+          开始分析
+        </el-button>
+        <el-button
+          v-else-if="running"
+          :loading="true"
+          disabled
+        >
+          开始分析
+        </el-button>
+        <el-button
+          v-else
+          plain
+          @click="reset"
+        >
+          重新开始
+        </el-button>
         <el-button
           v-if="running && !isFinished(status)"
           type="danger"
@@ -310,7 +336,11 @@ onUnmounted(stopPoll);
         >
           中断任务
         </el-button>
-        <el-button :disabled="!isFinished(status)" @click="router.push('/results')">
+        <el-button
+          type="primary"
+          :disabled="!isFinished(status)"
+          @click="router.push('/results')"
+        >
           查看推荐结果 →
         </el-button>
       </div>

@@ -70,8 +70,9 @@ onMounted(load);
       </el-select>
       <el-input v-model="skillFilter" clearable placeholder="技术栈关键词" style="width: 200px" />
       <div style="flex: 1" />
-      <el-button @click="load">刷新</el-button>
-      <el-button type="primary" @click="exportExcel">导出 Excel</el-button>
+      <el-button :type="results.length > 0 ? 'primary' : 'plain'" @click="exportExcel" :disabled="results.length === 0">
+        导出 Excel
+      </el-button>
     </div>
 
     <div class="card">

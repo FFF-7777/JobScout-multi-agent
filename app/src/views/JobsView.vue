@@ -256,7 +256,12 @@ onMounted(refresh);
           >
             批量删除
           </el-button>
-          <el-button type="primary" @click="startAnalyze">开始分析 →</el-button>
+          <el-button
+            :type="hasSelected ? 'primary' : 'plain'"
+            @click="startAnalyze"
+          >
+            {{ hasSelected ? `开始分析 (${selectedCount}) →` : "开始分析 →" }}
+          </el-button>
         </div>
         <div v-if="fullModeCount > 0" class="mode-hint">
           全文模式：{{ fullModeCount }} / {{ FULL_MODE_LIMIT }}（更精准，单次 LLM 耗时翻倍）

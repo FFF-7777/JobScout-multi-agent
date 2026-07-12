@@ -161,6 +161,12 @@ export const api = {
     http.post<WorkflowTask>("/api/agents/run", { resume_id, job_ids }).then((r) => r.data),
   getTask: (task_id: string) =>
     http.get<WorkflowTask>(`/api/agents/tasks/${task_id}`).then((r) => r.data),
+  abortTask: (task_id: string) =>
+    http
+      .post<{ ok: boolean; task_id: string; aborted: string[] }>(
+        `/api/agents/tasks/${task_id}/abort`
+      )
+      .then((r) => r.data),
 
   listResults: (task_id?: string) =>
     http

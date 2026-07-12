@@ -15,6 +15,8 @@ API 约定：
 - on_result 收到 (item, result, error)：
   - worker 成功：error is None，result 是 worker 的返回值
   - worker 抛错：result is None，error 是 Exception 实例
+- on_result 想主动中止整个流程：raise AbortFlow；bounded_map 会取消所有未完成
+  future 并向上重新抛出（其它回调里也要 try/except 把 AbortFlow 透传出来）。
 """
 from __future__ import annotations
 
@@ -24,6 +26,10 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import TypeVar
 
 T = TypeVar("T")
+
+
+class AbortFlow(BaseException):
+    """on_result 抛此异常可中止整个 bounded_map 流程，剩余 worker 会被取消。"""
 
 
 def bounded_map(
@@ -56,16 +62,21 @@ def bounded_map(
 
     with ThreadPoolExecutor(max_workers=max_c) as pool:
         futures: list[Future] = [pool.submit(_run, it) for it in items]
-        for fut in as_completed(futures):
-            item, result, error = fut.result()
-            with out_lock:
-                out.append((item, result, error))
-            if on_result is not None:
-                try:
-                    on_result(item, result, error)
-                except Exception as cb_err:  # noqa: BLE001
-                    # 回调出错不应破坏并发流；记在 error 槽位
-                    with out_lock:
-                        out[-1] = (item, result, cb_err)
-
+        try:
+            for fut in as_completed(futures):
+                item, result, error = fut.result()
+                with out_lock:
+                    out.append((item, result, error))
+                if on_result is not None:
+                    try:
+                        on_result(item, result, error)
+                    except AbortFlow:
+                        raise
+                    except Exception as cb_err:  # noqa: BLE001
+                        with out_lock:
+                            out[-1] = (item, result, cb_err)
+        except AbortFlow:
+            for f in futures:
+                f.cancel()
+            raise
     return out

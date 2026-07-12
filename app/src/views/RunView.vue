@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { api, type AgentRun } from "@/api";
 import { useAppStore } from "@/stores/app";
 
@@ -138,6 +138,31 @@ async function start() {
   }
 }
 
+const aborting = ref(false);
+async function abort() {
+  const tid = store.taskId;
+  if (!tid || !running.value) return;
+  try {
+    await ElMessageBox.confirm(
+      "确定中断当前任务？已完成的步骤会保留，未完成的会标记为失败。",
+      "中断任务",
+      { type: "warning", confirmButtonText: "中断", cancelButtonText: "继续" }
+    );
+  } catch {
+    return;
+  }
+  aborting.value = true;
+  try {
+    await api.abortTask(tid);
+    ElMessage.success("已发送中断指令，后台会尽快停止");
+    // 不立刻 stopPoll：让下一次 poll 自然拉到 failed 状态后清理
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "中断失败");
+  } finally {
+    aborting.value = false;
+  }
+}
+
 function fmt(v: any) {
   return JSON.stringify(v, null, 2);
 }
@@ -231,6 +256,15 @@ onUnmounted(stopPoll);
       </div>
       <div style="display: flex; gap: 12px">
         <el-button type="primary" :loading="running" @click="start">开始分析</el-button>
+        <el-button
+          v-if="running && !isFinished(status)"
+          type="danger"
+          plain
+          :loading="aborting"
+          @click="abort"
+        >
+          中断任务
+        </el-button>
         <el-button :disabled="!isFinished(status)" @click="router.push('/results')">
           查看推荐结果 →
         </el-button>

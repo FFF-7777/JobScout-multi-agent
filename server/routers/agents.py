@@ -1,5 +1,7 @@
-"""Agent 工作流接口：启动分析任务、查询执行进度。"""
+"""Agent 工作流接口：启动分析任务、查询执行进度、中断任务。"""
 from __future__ import annotations
+
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -51,6 +53,29 @@ def _task_status(steps: list[AgentRun]) -> str:
     if "running" in statuses or "pending" in statuses:
         return "running"
     return "completed"
+
+
+@router.post("/tasks/{task_id}/abort")
+def abort_task(task_id: str, db: Session = Depends(get_db)):
+    """把一个运行中任务的未完成步骤标记为 failed（用户中止）。
+    已 success 的步骤保留；后台 workflow 会在下一次 on_result 检查时发现并早退。"""
+    runs = (
+        db.query(AgentRun)
+        .filter(AgentRun.task_id == task_id, AgentRun.status.in_(["pending", "running"]))
+        .all()
+    )
+    if not runs:
+        raise HTTPException(404, "没有可中断的运行中任务")
+    now = datetime.utcnow()
+    for r in runs:
+        r.status = "failed"
+        r.error_message = "用户中止"
+        if r.started_at is None:
+            r.started_at = now
+        r.finished_at = now
+        r.progress = 100
+    db.commit()
+    return {"ok": True, "task_id": task_id, "aborted": [r.agent_name for r in runs]}
 
 
 @router.get("/tasks/{task_id}", response_model=WorkflowTaskOut)

@@ -22,7 +22,7 @@ from schemas.match import MatchResultModel
 from schemas.report import JobReport
 from schemas.resume import ResumeProfile
 from services import job_agent, match_agent, report_agent, resume_agent
-from services.concurrency import bounded_map
+from services.concurrency import AbortFlow, bounded_map
 
 AGENT_STEPS = [
     ("parse_resume", "Resume Agent"),
@@ -137,6 +137,29 @@ def _calc_eta(task_id: str, agent_name: str, total: int, done: int) -> int:
 # --------- 各节点 ---------
 
 
+def _is_aborted(task_id: str, agent_name: str) -> bool:
+    """用户调了 abort_task：当前节点会被标记为 failed。on_result / 节点入口检查一次即可。"""
+    db = SessionLocal()
+    try:
+        run = (
+            db.query(AgentRun)
+            .filter(AgentRun.task_id == task_id, AgentRun.agent_name == agent_name)
+            .first()
+        )
+        return bool(run and run.status == "failed" and run.error_message == "用户中止")
+    finally:
+        db.close()
+
+
+class _AbortedByUser(AbortFlow):
+    """用户在 workflow 跑期间点了「中断」。继承 AbortFlow 让 bounded_map 取消剩余 future。"""
+
+
+def _check_aborted_or_raise(task_id: str, agent_name: str) -> None:
+    if _is_aborted(task_id, agent_name):
+        raise _AbortedByUser()
+
+
 def node_parse_resume(state: JobScoutState) -> JobScoutState:
     task_id = state["task_id"]
     _update_run(task_id, "Resume Agent", status="running", progress=10, start=True)
@@ -235,6 +258,8 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
         done += 1
         progress = int(done / total * 100) if total else 100
         label = f"正在解析岗位 {jid}（{done}/{total}）"
+        if _is_aborted(task_id, "Job Agent"):
+            raise _AbortedByUser()
         if err is not None or profile is None:
             state.setdefault("errors", []).append(f"parse_jobs job {jid}: {err}")
             _update_run(
@@ -374,6 +399,8 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         jid = item["job_id"]
         progress = int(done / total * 100) if total else 100
         label = f"正在匹配岗位 {jid}（{done}/{total}）"
+        if _is_aborted(task_id, "Match Agent"):
+            raise _AbortedByUser()
         if err is not None or match is None:
             state.setdefault("errors", []).append(f"match_jobs job {jid}: {err}")
             _update_run(
@@ -483,6 +510,8 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
         result_id = mr_payload["result_id"]
         progress = int(done / total * 100) if total else 100
         label = f"正在生成报告 {jid}（{done}/{total}）"
+        if _is_aborted(task_id, "Report Agent"):
+            raise _AbortedByUser()
         if err is not None or report is None:
             state.setdefault("errors", []).append(f"generate_report job {jid}: {err}")
             _update_run(
@@ -616,4 +645,16 @@ def run_workflow(task_id: str, resume_id: int, job_ids: list[int]) -> None:
         "job_ids": job_ids,
         "errors": [],
     }
-    _GRAPH.invoke(state)
+    try:
+        _GRAPH.invoke(state)
+    except _AbortedByUser:
+        # 用户中止：把"还没跑到"的下游节点统一标记为 failed/已中止
+        for name in ("Resume Agent", "Job Agent", "Match Agent", "Report Agent"):
+            _update_run(
+                task_id,
+                name,
+                status="failed",
+                progress=100,
+                error="用户中止",
+                finish=True,
+            )

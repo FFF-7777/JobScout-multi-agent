@@ -49,11 +49,10 @@ onMounted(load);
 
 <template>
   <div class="page" v-loading="loading">
-    <el-button link type="primary" class="back-btn" @click="router.back()">← 返回</el-button>
+    <el-button link type="primary" @click="router.back()">← 返回</el-button>
     <el-empty v-if="!loading && !job" description="未找到该岗位（可能已被删除）" />
-    <div v-else-if="job" class="card-stack">
-      <!-- 头部：岗位名片（大卡片） -->
-      <div class="card hero-card">
+    <div v-else-if="job" class="big-card">
+      <div class="big-card-head">
         <div class="hero-title">
           <span class="company">{{ job.company_name || "（待解析）" }}</span>
           <span class="dot">·</span>
@@ -80,12 +79,8 @@ onMounted(load);
         </div>
       </div>
 
-      <!-- 匹配评分卡（仅在有 match 时显示） -->
-      <div v-if="match" class="card score-card">
-        <div class="card-head">
-          <span class="card-icon">🎯</span>
-          <span class="card-title">匹配评分</span>
-        </div>
+      <div v-if="match" class="section">
+        <div class="section-title">🎯 匹配评分</div>
         <div class="score-body">
           <div class="score-left">
             <div class="score-grade-row">
@@ -108,112 +103,73 @@ onMounted(load);
         </div>
       </div>
 
-      <!-- 匹配点 / 缺口分析（左右两卡片） -->
-      <div v-if="match" class="card-grid">
-        <div class="card">
-          <div class="card-head">
-            <span class="card-icon">✅</span>
-            <span class="card-title">匹配点</span>
-            <el-tag size="small" type="success" effect="light">
-              {{ match.matched_points?.length || 0 }} 项
-            </el-tag>
-          </div>
-          <ul class="point-list success-list">
+      <div v-if="match" class="grid2">
+        <div class="sub-card success">
+          <div class="sub-head">✅ 匹配点（{{ match.matched_points?.length || 0 }}）</div>
+          <ul>
             <li v-for="p in match.matched_points" :key="p">{{ p }}</li>
           </ul>
         </div>
-        <div class="card">
-          <div class="card-head">
-            <span class="card-icon">⚠️</span>
-            <span class="card-title">缺口分析</span>
-            <el-tag size="small" type="warning" effect="light">
-              {{ match.missing_points?.length || 0 }} 项
-            </el-tag>
-          </div>
-          <ul class="point-list warning-list">
+        <div class="sub-card warning">
+          <div class="sub-head">⚠️ 缺口分析（{{ match.missing_points?.length || 0 }}）</div>
+          <ul>
             <li v-for="p in match.missing_points" :key="p">{{ p }}</li>
           </ul>
         </div>
       </div>
 
-      <!-- 风险提示（独立大卡片） -->
       <div
         v-if="match?.risk_notes?.length || report?.risks?.length"
-        class="card risk-card"
+        class="sub-card danger"
       >
-        <div class="card-head">
-          <span class="card-icon">🚩</span>
-          <span class="card-title">风险提示</span>
-        </div>
-        <ul class="point-list danger-list">
+        <div class="sub-head">🚩 风险提示</div>
+        <ul>
           <li v-for="p in [...(match?.risk_notes || []), ...(report?.risks || [])]" :key="p">
             {{ p }}
           </li>
         </ul>
       </div>
 
-      <!-- 投递建议（仅在有 report 时） -->
-      <div v-if="report" class="card recommend-card">
-        <div class="card-head">
-          <span class="card-icon">📌</span>
-          <span class="card-title">投递建议</span>
-        </div>
+      <div v-if="report" class="sub-card primary">
+        <div class="sub-head">📌 投递建议</div>
         <div class="rec-summary">
-          <b class="rec-conclusion">{{ report.conclusion }}</b>
+          <b>{{ report.conclusion }}</b>
           <span class="rec-divider">·</span>
-          <span class="rec-priority">{{ report.priority }}</span>
+          <span>{{ report.priority }}</span>
         </div>
-        <ul class="point-list">
+        <ul>
           <li v-for="r in report.reasons" :key="r">{{ r }}</li>
         </ul>
       </div>
 
-      <!-- 面试可能问题 / 项目讲解重点（左右两卡片） -->
-      <div v-if="report" class="card-grid">
-        <div class="card">
-          <div class="card-head">
-            <span class="card-icon">💬</span>
-            <span class="card-title">面试可能问题</span>
-          </div>
-          <ol class="point-list numbered">
+      <div v-if="report" class="grid2">
+        <div class="sub-card">
+          <div class="sub-head">💬 面试可能问题</div>
+          <ol>
             <li v-for="q in report.interview_questions" :key="q">{{ q }}</li>
           </ol>
         </div>
-        <div class="card">
-          <div class="card-head">
-            <span class="card-icon">🎤</span>
-            <span class="card-title">项目讲解重点</span>
-          </div>
-          <ul class="point-list">
+        <div class="sub-card">
+          <div class="sub-head">🎤 项目讲解重点</div>
+          <ul>
             <li v-for="q in report.project_talking_points" :key="q">{{ q }}</li>
           </ul>
         </div>
       </div>
 
-      <!-- BOSS / HR 话术（左右两卡片） -->
-      <div v-if="report" class="card-grid">
-        <div class="card">
-          <div class="card-head">
-            <span class="card-icon">👋</span>
-            <span class="card-title">BOSS 打招呼话术</span>
-          </div>
+      <div v-if="report" class="grid2">
+        <div class="sub-card">
+          <div class="sub-head">👋 BOSS 打招呼话术</div>
           <div class="quote">{{ report.boss_greeting }}</div>
         </div>
-        <div class="card">
-          <div class="card-head">
-            <span class="card-icon">✉️</span>
-            <span class="card-title">HR 私信</span>
-          </div>
+        <div class="sub-card">
+          <div class="sub-head">✉️ HR 私信</div>
           <div class="quote">{{ report.hr_message }}</div>
         </div>
       </div>
 
-      <!-- 岗位解析 -->
-      <div class="card">
-        <div class="card-head">
-          <span class="card-icon">📋</span>
-          <span class="card-title">岗位解析</span>
-        </div>
+      <div class="sub-card">
+        <div class="sub-head">📋 岗位解析</div>
         <div class="chips">
           <span class="chip-title">必备技能</span>
           <el-tag
@@ -245,12 +201,8 @@ onMounted(load);
         </div>
       </div>
 
-      <!-- JD 原文（最后一张大卡片） -->
-      <div class="card">
-        <div class="card-head">
-          <span class="card-icon">📄</span>
-          <span class="card-title">JD 原文</span>
-        </div>
+      <div class="sub-card">
+        <div class="sub-head">📄 JD 原文</div>
         <pre class="jd">{{ job.jd_text }}</pre>
       </div>
     </div>
@@ -258,43 +210,20 @@ onMounted(load);
 </template>
 
 <style scoped>
-.back-btn {
-  margin-bottom: 8px;
-  font-size: 15px;
+/* === 大卡片容器（整张图就是一张卡）=== */
+.big-card {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 28px 32px 36px;
+  box-shadow: 0 4px 24px rgba(20, 40, 90, 0.08);
+  border: 1px solid #ebeef5;
 }
-
-/* === 卡片墙容器 === */
-.card-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-.card-stack > .card {
-  margin-bottom: 0; /* 卡片间距由 gap 控制 */
-}
-
-/* === 通用卡片头 === */
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
-  font-size: 17px;
-  font-weight: 700;
-  color: #1f2733;
-}
-.card-icon {
-  font-size: 18px;
-}
-.card-title {
-  flex: 0 0 auto;
-}
-
-/* === 头部名片卡 === */
-.hero-card {
-  padding: 24px 28px;
+.big-card-head {
   background: linear-gradient(135deg, #ffffff 0%, #f7f9ff 100%);
   border: 1px solid #e6ecff;
+  border-radius: 12px;
+  padding: 22px 24px;
+  margin-bottom: 24px;
 }
 .hero-title {
   font-size: 24px;
@@ -314,8 +243,19 @@ onMounted(load);
   flex-wrap: wrap;
 }
 
-/* === 匹配评分卡 === */
-.score-card .score-body {
+/* === 区块（弱分组）=== */
+.section {
+  margin: 18px 0;
+}
+.section-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1f2733;
+  margin-bottom: 12px;
+}
+
+/* === 匹配评分 === */
+.score-body {
   display: flex;
   gap: 28px;
   flex-wrap: wrap;
@@ -358,46 +298,39 @@ onMounted(load);
   margin-top: 4px;
 }
 
-/* === 两栏卡片网格 === */
-.card-grid {
+/* === 子卡（在大卡内分组）=== */
+.grid2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 18px;
+  gap: 16px;
+  margin: 16px 0;
 }
-.card-grid > .card {
-  margin-bottom: 0;
+.sub-card {
+  background: #fafbfd;
+  border-radius: 10px;
+  padding: 18px 20px;
+  border: 1px solid #ebeef5;
 }
-
-/* === 风险卡：左侧红色边线 === */
-.risk-card {
+.sub-card.success {
+  border-left: 4px solid #2fae5f;
+}
+.sub-card.warning {
+  border-left: 4px solid #f7861b;
+}
+.sub-card.danger {
   border-left: 4px solid #e64545;
+  margin: 16px 0;
 }
-
-/* === 投递建议卡：左侧蓝色边线 === */
-.recommend-card {
+.sub-card.primary {
   border-left: 4px solid #3a6ff7;
+  margin: 16px 0;
 }
-.rec-summary {
-  font-size: 15px;
-  margin-bottom: 10px;
-  padding: 10px 14px;
-  background: #f5f8ff;
-  border-radius: 6px;
-}
-.rec-conclusion {
-  color: #1f2733;
+.sub-head {
+  font-size: 16px;
   font-weight: 700;
+  color: #1f2733;
+  margin-bottom: 10px;
 }
-.rec-divider {
-  margin: 0 8px;
-  color: #b8bfca;
-}
-.rec-priority {
-  color: #3a6ff7;
-  font-weight: 600;
-}
-
-/* === 列表样式 === */
 ul,
 ol {
   margin: 4px 0;
@@ -406,17 +339,16 @@ ol {
   font-size: 15px;
   color: #2c3340;
 }
-.point-list li {
-  margin: 4px 0;
+.rec-summary {
+  font-size: 15px;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  background: #f5f8ff;
+  border-radius: 6px;
 }
-.success-list li::marker {
-  color: #2fae5f;
-}
-.warning-list li::marker {
-  color: #f7861b;
-}
-.danger-list li::marker {
-  color: #e64545;
+.rec-divider {
+  margin: 0 8px;
+  color: #b8bfca;
 }
 
 /* === 话术引用 === */
@@ -462,10 +394,10 @@ ol {
 
 /* === 响应式 === */
 @media (max-width: 900px) {
-  .card-grid {
+  .grid2 {
     grid-template-columns: 1fr;
   }
-  .score-card .score-body {
+  .score-body {
     flex-direction: column;
     align-items: flex-start;
   }

@@ -5,6 +5,34 @@ import { ElMessage } from "element-plus";
 import { api, type Job, type MatchResult } from "@/api";
 import { useAppStore } from "@/stores/app";
 
+/** 0-100 渐变：紫(0) → 蓝(50) → 青(75) → 绿(100) */
+function scoreColor(p: number): string {
+  const v = Math.max(0, Math.min(100, p));
+  if (v <= 50) {
+    // 紫 → 蓝：#8b5cf6 → #3b82f6
+    const t = v / 50;
+    return mix("#8b5cf6", "#3b82f6", t);
+  } else if (v <= 75) {
+    // 蓝 → 青：#3b82f6 → #06b6d4
+    const t = (v - 50) / 25;
+    return mix("#3b82f6", "#06b6d4", t);
+  } else {
+    // 青 → 绿：#06b6d4 → #10b981
+    const t = (v - 75) / 25;
+    return mix("#06b6d4", "#10b981", t);
+  }
+}
+function mix(a: string, b: string, t: number): string {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const ar = (pa >> 16) & 0xff, ag = (pa >> 8) & 0xff, ab = pa & 0xff;
+  const br = (pb >> 16) & 0xff, bg = (pb >> 8) & 0xff, bb = pb & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
 const props = withDefaults(
   defineProps<{
     /** 当作为 modal 嵌入时，从父组件传 jobId 覆盖 route.params.id */
@@ -217,7 +245,7 @@ function gotoResults() {
               <div class="score-left">
                 <div class="score-grade-row">
                   <span :class="['grade-tag', 'grade-' + match.level]">{{ match.level }}</span>
-                  <div class="score-num">
+                  <div class="score-num" :style="{ color: scoreColor(match.score) }">
                     {{ match.score }} <span class="score-unit">分</span>
                   </div>
                 </div>
@@ -228,8 +256,9 @@ function gotoResults() {
                   <el-progress
                     type="dashboard"
                     :percentage="Math.round(Number(v))"
-                    :width="68"
-                    :stroke-width="6"
+                    :width="86"
+                    :stroke-width="9"
+                    :color="scoreColor(Number(v))"
                   />
                   <div class="dim-label">{{ DIM_LABELS[k] || k }}</div>
                 </div>
@@ -390,10 +419,12 @@ function gotoResults() {
   margin-bottom: 6px;
 }
 .score-num {
-  font-size: 32px;
-  font-weight: 800;
+  font-size: 44px;             /* 32 → 44，跟 5 个仪表盘视觉一致 */
+  font-weight: 900;
   color: #3a6ff7;
   line-height: 1.1;
+  letter-spacing: -1px;
+  transition: color 0.3s ease;
 }
 .score-unit {
   font-size: 16px;

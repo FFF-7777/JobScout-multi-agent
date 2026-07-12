@@ -384,7 +384,7 @@ onMounted(refresh);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="JD 预览" min-width="340" cell-class-name="jd-prev-cell">
+        <el-table-column label="JD 预览" min-width="520" cell-class-name="jd-prev-cell">
           <template #default="{ row }">
             <div class="jd-prev" :title="row.jd_text">
               {{ (row.jd_text || "").slice(0, 140) }}

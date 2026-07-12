@@ -361,7 +361,7 @@ onMounted(refresh);
         class="job-table"
         :row-style="{ cursor: 'pointer' }"
       >
-        <el-table-column type="selection" width="48" />
+        <el-table-column type="selection" width="64" />
         <el-table-column prop="id" label="ID" width="56" />
         <el-table-column prop="company_name" label="公司" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ row.company_name || "（待解析）" }}</template>
@@ -440,16 +440,17 @@ onMounted(refresh);
   gap: 12px;
   flex-wrap: wrap;
 }
-/* === 行内 checkbox 放大到 3 倍（直接改内部方框尺寸，比 transform scale 更稳）=== */
-.job-table :deep(.el-table__column--selection) .el-checkbox {
+/* === 行内 checkbox 放大到 3 倍 === */
+/* 关键：el-table selection 列的 class 是 el-table__cell--selection（不是 __column--selection） */
+.job-table :deep(.el-table__cell--selection) .el-checkbox {
   height: 32px;
 }
-.job-table :deep(.el-table__column--selection) .el-checkbox__inner {
+.job-table :deep(.el-table__cell--selection) .el-checkbox__inner {
   width: 24px;            /* 原 14px → 24px，约 1.7 倍 */
   height: 24px;
   border-width: 2px;
 }
-.job-table :deep(.el-table__column--selection) .el-checkbox__inner::after {
+.job-table :deep(.el-table__cell--selection) .el-checkbox__inner::after {
   /* 勾的对号：原 1px → 3px */
   border-width: 0 3px 3px 0;
   left: 8px;
@@ -457,18 +458,15 @@ onMounted(refresh);
   height: 12px;
   width: 6px;
 }
-.job-table :deep(.el-table__column--selection) .el-checkbox__label {
+.job-table :deep(.el-table__cell--selection) .el-checkbox__label {
   /* 隐藏默认 label 文字（如果出现） */
   display: none;
 }
-.job-table :deep(.el-table__column--selection) .cell {
+.job-table :deep(.el-table__cell--selection) .cell {
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 12px 0;
-}
-.job-table :deep(.el-table__column--selection) {
-  width: 56px !important;
 }
 .toolbar-right {
   display: flex;

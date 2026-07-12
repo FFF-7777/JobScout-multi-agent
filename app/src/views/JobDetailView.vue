@@ -50,7 +50,8 @@ onMounted(load);
 <template>
   <div class="page" v-loading="loading">
     <el-button link type="primary" @click="router.back()">← 返回</el-button>
-    <div v-if="job">
+    <el-empty v-if="!loading && !job" description="未找到该岗位（可能已被删除）" />
+    <div v-else-if="job">
       <div class="page-title">{{ job.company_name || "岗位" }} · {{ job.job_title }}</div>
       <div class="page-sub">{{ job.city }} · {{ job.salary }} · 来源 {{ job.source }}</div>
 

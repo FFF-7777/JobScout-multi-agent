@@ -107,7 +107,10 @@ def analyze_job(job_id: int, db: Session = Depends(get_db)):
         "city": job.city,
         "salary": job.salary,
     }
-    profile = job_agent.run(job.jd_text, hints)
+    try:
+        profile = job_agent.run(job.jd_text, hints)
+    except Exception:
+        raise HTTPException(502, "岗位分析失败：模型返回异常，请稍后重试")
     job.company_name = job.company_name or profile.company_name
     job.job_title = job.job_title or profile.job_title
     job.city = job.city or profile.city

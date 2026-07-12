@@ -18,7 +18,7 @@ const active = computed(() => route.name);
   <div class="layout">
     <header class="topbar">
       <div class="brand">
-        <span class="logo">IS</span>
+        <span class="logo">JS</span>
         <div>
           <div class="brand-name">JobScout</div>
           <div class="brand-sub">AI 求职岗位筛选与匹配多智能体助手</div>

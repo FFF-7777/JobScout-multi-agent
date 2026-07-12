@@ -74,8 +74,11 @@
         try {
           const j = JSON.parse(r.responseText);
           if (Array.isArray(j) && j.length) {
+            // 导入接口只存 jd_text，job_title 此时为空，用 JD 首行做兜底名
+            const firstLine = text.split("\n").map((s) => s.trim()).find(Boolean) || "岗位";
+            const name = (j[0] && j[0].job_title) || firstLine;
             GM_notification({
-              text: `已导入「${j[0].job_title || "岗位"}」等 ${j.length} 个岗位`,
+              text: `已导入「${name.slice(0, 30)}」等 ${j.length} 个岗位`,
               title: "JobScout 导入成功",
             });
           } else {

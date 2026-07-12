@@ -501,20 +501,25 @@ onMounted(refresh);
   color: #2c3340;
   font-size: 14px;
   line-height: 1.6;
-  white-space: pre-wrap;        /* 保留换行符 */
-  word-break: break-word;       /* 自动换行（中文友好） */
-  cursor: pointer;              /* 整列可点的视觉提示 */
-  display: block;               /* 撑满整列，不让 el-table 内部省略号截断 */
-  max-height: 360px;            /* 给一个上限，避免极端 JD 把行撑得超高 */
-  overflow-y: auto;             /* 超出可滚动 */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;     /* 强制任意位置断行，长串字符也安全 */
+  white-space: pre-wrap;
+  cursor: pointer;
+  padding-right: 16px;
+  box-sizing: border-box;
 }
 /* 让 JD 列的 td 上下 padding 大一点、top 对齐 */
 .job-table :deep(td.jd-prev-cell),
 .job-table :deep(.jd-prev-cell) {
   padding-top: 12px !important;
   padding-bottom: 12px !important;
+  padding-right: 18px !important;   /* 右侧内边距 */
   vertical-align: top;
-  cursor: pointer;              /* 整列 td 鼠标也是手型 */
+  cursor: pointer;
 }
 .job-table :deep(tbody tr):hover > td {
   background-color: #f5f8ff !important;

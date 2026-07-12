@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -34,6 +35,43 @@ def _get_ocr_service():
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+
+def _parse_job_by_id(job_id: int) -> None:
+    """在独立会话里对单个岗位跑 Job Agent 解析并写回（供后台自动解析线程调用）。"""
+    from database import SessionLocal
+
+    s = SessionLocal()
+    try:
+        job = s.get(Job, job_id)
+        if job is None:
+            return
+        hints = {
+            "company_name": job.company_name,
+            "job_title": job.job_title,
+            "city": job.city,
+            "salary": job.salary,
+        }
+        try:
+            profile = job_agent.run(job.jd_text, hints, source=job.source)
+        except Exception:
+            job.parse_status = "failed"
+            job.parse_error = "模型返回异常"
+            s.commit()
+            return
+        _apply_analysis(job, profile, s)
+    finally:
+        s.close()
+
+
+def _background_parse(job_ids: list[int]) -> None:
+    """导入后自动解析：后台并发跑 Job Agent，更新 parse_status，不阻塞导入接口返回。"""
+    if not job_ids:
+        return
+    settings = get_settings()
+    max_c = max(1, min(settings.job_agent_concurrency, len(job_ids)))
+    with ThreadPoolExecutor(max_workers=max_c) as pool:
+        list(pool.map(_parse_job_by_id, job_ids))
+
 _SPLIT_RE = re.compile(r"\n\s*(?:-{3,}|={3,}|#{2,}|\n)\s*\n")
 _MAX_UPLOAD = 10 * 1024 * 1024  # 10 MiB 上传上限
 _MAX_IMAGES = 20  # 单次最多上传图片数
@@ -54,12 +92,19 @@ def import_text(req: JobImportTextRequest, db: Session = Depends(get_db)):
         raise HTTPException(400, "JD 文本为空")
     chunks = [c.strip() for c in _SPLIT_RE.split(text) if c.strip()] if req.split_batch else [text]
     created: list[dict] = []
+    created_ids: list[int] = []
     for chunk in chunks:
         job = Job(source="manual", jd_text=chunk)
         db.add(job)
         db.commit()
         db.refresh(job)
+        # 标记解析中，交给后台自动解析
+        job.parse_status = "parsing"
+        db.commit()
         created.append(_to_out(job, db))
+        created_ids.append(job.id)
+    # 导入后自动解析（不阻塞返回）
+    threading.Thread(target=_background_parse, args=(created_ids,), daemon=True).start()
     return created
 
 
@@ -77,12 +122,17 @@ async def import_file(
     if not rows:
         raise HTTPException(400, "表格中未解析到有效岗位")
     created: list[dict] = []
+    created_ids: list[int] = []
     for row in rows:
         job = Job(**row)
         db.add(job)
         db.commit()
         db.refresh(job)
+        job.parse_status = "parsing"
+        db.commit()
         created.append(_to_out(job, db))
+        created_ids.append(job.id)
+    threading.Thread(target=_background_parse, args=(created_ids,), daemon=True).start()
     return created
 
 
@@ -101,7 +151,12 @@ def import_url(req: JobImportUrlRequest, db: Session = Depends(get_db)):
     db.add(job)
     db.commit()
     db.refresh(job)
-    return _to_out(job, db)
+    job.parse_status = "parsing"
+    db.commit()
+    created_id = job.id
+    out = _to_out(job, db)
+    threading.Thread(target=_background_parse, args=([created_id],), daemon=True).start()
+    return out
 
 
 @router.post("/import-images", response_model=ImportImagesResult)
@@ -139,6 +194,7 @@ async def import_images(
 
     created: list[dict] = []
     failed: list[ImportImageFailed] = []
+    created_ids: list[int] = []
 
     for res in ocr_results:
         fname = res.get("filename", "")
@@ -153,13 +209,18 @@ async def import_images(
         db.add(job)
         db.commit()
         db.refresh(job)
+        job.parse_status = "parsing"
+        db.commit()
         created.append(_to_out(job, db))
+        created_ids.append(job.id)
 
     # 全部失败：明确报错
     if not created and failed:
         detail = "；".join(f"{f.filename}: {f.error}" for f in failed[:5])
         raise HTTPException(422, f"所有图片识别均失败：{detail}")
 
+    # OCR 导入后自动解析（不阻塞返回）
+    threading.Thread(target=_background_parse, args=(created_ids,), daemon=True).start()
     return ImportImagesResult(created=created, failed=failed)
 
 

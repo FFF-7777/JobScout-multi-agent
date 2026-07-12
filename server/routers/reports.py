@@ -76,7 +76,7 @@ def generate_reports_batch(req: ReportGenerateRequest, db: Session = Depends(get
     if not payloads:
         raise HTTPException(400, "无可生成报告的匹配结果（缺少简历画像或匹配详情）")
 
-    def _persist(result_id: int, report_dict: dict) -> None:
+    def _persist(result_id: int, report_dict: dict, key: str) -> None:
         s = SessionLocal()
         try:
             row = s.get(MatchResult, result_id)
@@ -84,36 +84,86 @@ def generate_reports_batch(req: ReportGenerateRequest, db: Session = Depends(get
                 detail = dict(row.detail_json)
                 detail["report"] = report_dict
                 row.detail_json = detail
+                row.report_cache_key = key
                 s.commit()
         finally:
             s.close()
 
+    def _report_key(p, model_role_model: str) -> str:
+        return report_agent.build_report_cache_key(
+            p["resume_profile"].model_dump(),
+            p["job_profile"].model_dump(),
+            p["match"].model_dump(),
+            model_role_model,
+            mode,
+        )
+
     generated = 0
     errors: list[dict] = []
+    cache_hits = 0
 
     if mode == "standard":
         for p in payloads:
+            model = get_settings().llm_fast_model or get_settings().llm_model
+            key = _report_key(p, model)
+            # 报告缓存命中：同 简历+岗位+匹配+模型+模式 时直接复用，跳过重建
+            s = SessionLocal()
+            try:
+                row = s.get(MatchResult, p["result_id"])
+                if (
+                    row
+                    and row.report_cache_key == key
+                    and row.detail_json
+                    and row.detail_json.get("report")
+                ):
+                    cache_hits += 1
+                    generated += 1
+                    continue
+            finally:
+                s.close()
             try:
                 report = report_agent.build_standard_job_report(p["job_profile"], p["match"])
-                _persist(p["result_id"], report)
+                _persist(p["result_id"], report, key)
                 generated += 1
             except Exception as e:  # noqa: BLE001
                 errors.append({"result_id": p["result_id"], "error": str(e)})
     else:  # deep
+        model = get_settings().llm_reasoning_model or get_settings().llm_model
+
         def _deep_worker(p):
-            return report_agent.run(
+            key = _report_key(p, model)
+            # deep 报告缓存命中同样跳过 LLM
+            s = SessionLocal()
+            try:
+                row = s.get(MatchResult, p["result_id"])
+                if (
+                    row
+                    and row.report_cache_key == key
+                    and row.detail_json
+                    and row.detail_json.get("report")
+                ):
+                    return p, None, key, True
+            finally:
+                s.close()
+            rep = report_agent.run(
                 p["resume_profile"],
                 p["job_profile"],
                 p["match"],
                 resume_text=p["resume_text"][:8000] if p["resume_text"] else None,
                 model_role="fast",
             )
+            return p, rep, key, False
 
-        def _deep_on_result(p, rep, err):
-            if err is not None or rep is None:
+        def _deep_on_result(p, payload, err):
+            nonlocal cache_hits
+            if err is not None or payload is None:
                 errors.append({"result_id": p["result_id"], "error": str(err)})
                 return
-            _persist(p["result_id"], rep.model_dump())
+            _, rep, key, hit = payload
+            if hit:
+                cache_hits += 1
+                return
+            _persist(p["result_id"], rep.model_dump(), key)
 
         bounded_map(
             payloads,
@@ -127,6 +177,7 @@ def generate_reports_batch(req: ReportGenerateRequest, db: Session = Depends(get
         "mode": mode,
         "requested": len(req.match_result_ids),
         "generated": generated,
+        "cache_hits": cache_hits,
         "errors": errors,
     }
 

@@ -1,6 +1,7 @@
 """Report Agent：生成单个岗位的投递建议与面试准备，并可汇总为 Markdown 报告。"""
 from __future__ import annotations
 
+import hashlib
 import json
 
 import prompts
@@ -9,6 +10,34 @@ from schemas.match import MatchResultModel
 from schemas.report import JobReport
 from schemas.resume import ResumeProfile
 from services import llm_service
+
+# 报告模板 / 融合逻辑版本号，作为报告缓存键的一部分：
+# 改了报告模板或评分口径时递增，使旧缓存失效、触发重新生成。
+REPORT_PROMPT_VERSION = "1"
+
+
+def build_report_cache_key(
+    resume_profile: dict,
+    job_profile: dict,
+    match: dict,
+    model: str,
+    mode: str,
+    prompt_version: str = REPORT_PROMPT_VERSION,
+) -> str:
+    """报告缓存键：相同 简历画像 + 岗位画像 + 匹配结果 + 模型 + 报告模式 + Prompt版本 时复用。
+
+    命中后（标准报告 / 深度报告）直接复用已生成内容，跳过 LLM 调用。返回 32 位十六进制串。
+    """
+    payload = {
+        "resume": resume_profile,
+        "job": job_profile,
+        "match": match,
+        "model": model,
+        "mode": mode,
+        "prompt_version": prompt_version,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 def run(

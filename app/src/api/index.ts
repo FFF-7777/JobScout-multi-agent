@@ -44,9 +44,14 @@ export interface Job {
   job_title: string;
   city: string;
   salary: string;
+  education: string;
+  experience: string;
   jd_text: string;
+  jd_summary: string;
   job_url: string;
   analyze_mode: "summary" | "full";
+  parse_status: string;
+  parse_error: string;
   analysis: JobProfile | null;
 }
 export interface AgentRun {
@@ -91,6 +96,12 @@ export interface MatchResult {
   job_title: string;
   city: string;
   salary: string;
+  // P1#7 两档匹配：quick（快速档）/ deep（深度档）
+  match_mode: string;
+  // P2#14 单条状态：success / failed
+  status: string;
+  error_message: string;
+  report_cache_key: string | null;
 }
 export interface ReportItem {
   id: number;
@@ -199,6 +210,24 @@ export const api = {
       .then((r) => r.data),
   getResult: (id: number) =>
     http.get<MatchResult>(`/api/match/results/${id}`).then((r) => r.data),
+
+  // P2#14 单/批量重试失败的匹配结果（不传 result_ids 则重试该 task 下所有 failed）
+  retryMatchResults: (result_ids: number[] = [], task_id?: string) =>
+    http
+      .post<{ requested: number; generated: number; errors: any[] }>(
+        "/api/match/results/retry",
+        { result_ids },
+        { params: task_id ? { task_id } : {} }
+      )
+      .then((r) => r.data),
+
+  // P2#10 单条执行记录（AgentItemRun）
+  listItemRuns: (task_id: string, agent_name?: string) =>
+    http
+      .get<any[]>("/api/match/item-runs", {
+        params: agent_name ? { task_id, agent_name } : { task_id },
+      })
+      .then((r) => r.data),
 
   generateReports: (match_result_ids: number[], mode: "standard" | "deep" = "standard") =>
     http

@@ -23,6 +23,8 @@ const selectedIds = ref<number[]>([]);
 const analyzingIds = ref<Set<number>>(new Set());
 // 全文模式上限（与后端 _FULL_MODE_LIMIT 同步）
 const FULL_MODE_LIMIT = 10;
+// #42：导入后后台自动解析，轮询 parse_status 直到全部完成
+const parsePollTimer = ref<number | null>(null);
 
 const hasSelected = computed(() => selectedIds.value.length > 0);
 const selectedCount = computed(() => selectedIds.value.length);
@@ -76,6 +78,32 @@ async function refresh() {
   }
 }
 
+// #42：导入后启动轮询，自动解析在后台跑（parse_status: pending/parsing/success/failed）
+// 轮询直到没有进行中的岗位为止，避免前端一直刷
+function startParsePolling() {
+  if (parsePollTimer.value) return;
+  parsePollTimer.value = window.setInterval(async () => {
+    await refresh();
+    const pending = jobs.value.some(
+      (j) => j.parse_status === "pending" || j.parse_status === "parsing"
+    );
+    if (!pending && parsePollTimer.value) {
+      clearInterval(parsePollTimer.value);
+      parsePollTimer.value = null;
+    }
+  }, 2000);
+}
+async function refreshAndWatch() {
+  await refresh();
+  startParsePolling();
+}
+function stopParsePolling() {
+  if (parsePollTimer.value) {
+    clearInterval(parsePollTimer.value);
+    parsePollTimer.value = null;
+  }
+}
+
 async function importText() {
   if (!jdText.value.trim()) {
     ElMessage.warning("请粘贴岗位 JD");
@@ -85,8 +113,8 @@ async function importText() {
   try {
     await api.importJobsText(jdText.value, splitBatch.value);
     jdText.value = "";
-    await refresh();
-    ElMessage.success("岗位已导入");
+    await refreshAndWatch();
+    ElMessage.success("岗位已导入，正在后台自动解析");
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "导入失败");
   } finally {
@@ -98,8 +126,8 @@ async function importFile(opt: UploadRequestOptions) {
   loading.value = true;
   try {
     const r = await api.importJobsFile(opt.file);
-    await refresh();
-    ElMessage.success(`导入 ${r.length} 个岗位`);
+    await refreshAndWatch();
+    ElMessage.success(`导入 ${r.length} 个岗位，正在后台自动解析`);
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "导入失败");
   } finally {
@@ -117,8 +145,8 @@ async function importUrl() {
   try {
     await api.importJobUrl(url);
     jobUrl.value = "";
-    await refresh();
-    ElMessage.success("链接岗位已导入");
+    await refreshAndWatch();
+    ElMessage.success("链接岗位已导入，正在后台自动解析");
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "链接导入失败");
   } finally {
@@ -142,7 +170,7 @@ async function importImages(uploadedFiles: File[]) {
         .join("；");
       ElMessage.warning(`成功 ${ok} 个，失败 ${fail} 个（${detail}${fail > 5 ? "…" : ""}）`);
     }
-    await refresh();
+    await refreshAndWatch();
   } catch (e: any) {
     const detail = e?.response?.data?.detail || e?.message || "图片识别失败";
     ElMessage.error(detail);
@@ -185,7 +213,10 @@ onMounted(() => {
   refresh();
   document.addEventListener("paste", handlePaste);
 });
-onBeforeUnmount(() => document.removeEventListener("paste", handlePaste));
+onBeforeUnmount(() => {
+  document.removeEventListener("paste", handlePaste);
+  stopParsePolling();
+});
 
 async function reanalyzeOne(job: Job) {
   analyzingIds.value.add(job.id);
@@ -465,9 +496,41 @@ function startAnalyze() {
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="解析" width="96" align="center">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.parse_status === 'failed'" :content="row.parse_error || '解析失败'" placement="top">
+              <el-tag size="small" type="danger">失败</el-tag>
+            </el-tooltip>
+            <el-tag v-else-if="row.parse_status === 'success'" size="small" type="success">已解析</el-tag>
+            <el-tag v-else-if="row.parse_status === 'parsing'" size="small" type="warning">
+              <span class="spin-dot" />解析中
+            </el-tag>
+            <el-tag v-else size="small" type="info">待解析</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="JD 预览" min-width="360" cell-class-name="jd-prev-cell">
           <template #default="{ row }">
-            <div class="jd-prev">
+            <div v-if="row.analysis" class="jd-structured">
+              <div class="js-row">
+                <b>要求：</b>{{ (row.analysis.required_skills || []).join("、") || "—" }}
+              </div>
+              <div class="js-row">
+                <b>优先：</b>{{ (row.analysis.preferred_skills || []).join("、") || "—" }}
+              </div>
+              <div class="js-row js-indent">
+                {{ (row.analysis.responsibilities || []).slice(0, 2).join("；") || "—" }}
+              </div>
+              <div v-if="(row.analysis.risk_tags || []).length" class="js-risk">
+                <el-tag
+                  v-for="t in row.analysis.risk_tags"
+                  :key="t"
+                  size="small"
+                  type="danger"
+                  effect="plain"
+                >{{ t }}</el-tag>
+              </div>
+            </div>
+            <div v-else class="jd-prev">
               {{ row.jd_text || "（暂无 JD 文本）" }}
             </div>
           </template>
@@ -558,6 +621,47 @@ function startAnalyze() {
   white-space: pre-wrap;
   padding-right: 12px;
   box-sizing: border-box;
+}
+/* #42：结构化预览（解析完成后展示三栏要点，替代纯 JD 文本） */
+.jd-structured {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #2c3340;
+}
+.jd-structured .js-row {
+  margin-bottom: 2px;
+}
+.jd-structured .js-row b {
+  color: #5b667a;
+}
+.jd-structured .js-indent {
+  color: #6b7280;
+  padding-left: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.jd-structured .js-risk {
+  margin-top: 4px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+/* 解析中微动圆点 */
+.spin-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e6a23c;
+  margin-right: 4px;
+  vertical-align: middle;
+  animation: spin-pulse 1s infinite ease-in-out;
+}
+@keyframes spin-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
 }
 /* 让 JD 列的 td 上下 padding 大一点、top 对齐 */
 .job-table :deep(td.jd-prev-cell),

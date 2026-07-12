@@ -274,6 +274,32 @@ function fmtEtaRange(low: number, high: number): string {
   return `约 ${Math.max(1, Math.ceil(low))}~${Math.ceil(high)} 秒`;
 }
 
+// P2#10：单条执行记录（AgentItemRun）展示，便于排查某岗位为何失败/耗时
+const itemRuns = ref<any[]>([]);
+const itemRunsOpen = ref(false);
+const itemRunsLoading = ref(false);
+const failedItemRuns = computed(() => itemRuns.value.filter((r) => r.status === "failed"));
+async function loadItemRuns() {
+  if (!store.taskId) return;
+  itemRunsLoading.value = true;
+  try {
+    itemRuns.value = await api.listItemRuns(store.taskId, "Match Agent");
+  } catch {
+    itemRuns.value = [];
+  } finally {
+    itemRunsLoading.value = false;
+  }
+}
+function toggleItemRuns() {
+  itemRunsOpen.value = !itemRunsOpen.value;
+  if (itemRunsOpen.value && itemRuns.value.length === 0) loadItemRuns();
+}
+function fmtItemDuration(ms: number | null) {
+  if (ms == null) return "—";
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
+}
+
 onMounted(async () => {
   if (store.taskId) {
     await poll(store.taskId);
@@ -440,6 +466,35 @@ onUnmounted(stopPoll);
           </template>
           <div v-if="s.error_message && !isCancelled(s)" class="tl-error">错误：{{ s.error_message }}</div>
           <div v-else-if="isCancelled(s)" class="tl-cancelled">用户已中断此节点</div>
+          <template v-if="s.agent_name === 'Match Agent'">
+            <div class="tl-itemruns">
+              <el-button link type="primary" size="small" :loading="itemRunsLoading" @click="toggleItemRuns">
+                执行明细（{{ itemRuns.length || "点击加载" }}<template v-if="failedItemRuns.length"> · {{ failedItemRuns.length }} 个失败</template>）
+              </el-button>
+              <el-collapse v-if="itemRunsOpen" class="tl-inflight">
+                <el-collapse-item title="单条执行记录（档位 / 状态 / 耗时 / 错误）">
+                  <table class="ir-table">
+                    <thead>
+                      <tr><th>岗位</th><th>档位</th><th>状态</th><th>耗时</th><th>错误</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="r in itemRuns" :key="r.id" :class="{ 'ir-fail': r.status === 'failed' }">
+                        <td>{{ r.item_label || ("岗位 " + r.item_id) }}</td>
+                        <td>{{ r.tier === "deep" ? "深度" : r.tier === "quick" ? "快速" : "—" }}</td>
+                        <td>
+                          <el-tag size="small" :type="r.status === 'failed' ? 'danger' : r.status === 'done' ? 'success' : 'info'">
+                            {{ r.status === "done" ? "完成" : r.status === "failed" ? "失败" : r.status === "running" ? "运行中" : "排队" }}
+                          </el-tag>
+                        </td>
+                        <td>{{ fmtItemDuration(r.duration_ms) }}</td>
+                        <td class="ir-err">{{ r.error_message || "—" }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
+          </template>
           <el-collapse v-if="s.output_json">
             <el-collapse-item title="查看完整输出">
               <pre class="tl-json">{{ fmt(s.output_json) }}</pre>
@@ -615,5 +670,34 @@ onUnmounted(stopPoll);
   max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;
+}
+/* P2#10：单条执行记录表 */
+.tl-itemruns {
+  margin-top: 10px;
+}
+.ir-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.ir-table th,
+.ir-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eef1f6;
+  vertical-align: top;
+}
+.ir-table th {
+  color: #8a94a6;
+  font-weight: 600;
+  background: #f7f9fc;
+}
+.ir-table tr.ir-fail td {
+  background: #fff5f5;
+}
+.ir-table .ir-err {
+  color: #e64545;
+  max-width: 260px;
+  word-break: break-word;
 }
 </style>

@@ -54,6 +54,7 @@ class JobOut(BaseModel):
     jd_summary: str = ""
     job_url: str
     parse_status: str = "pending"
+    parse_error: str = ""
     analyze_mode: str = "summary"
     created_at: datetime | None = None
     analysis: dict | None = None

@@ -16,6 +16,7 @@ const levelFilter = ref<string>("");
 const skillFilter = ref<string>("");
 const selectedIds = ref<number[]>([]);
 const generating = ref(false);
+const retrying = ref(false);
 const taskStatus = ref<string>("");
 let pollTimer: number | null = null;
 
@@ -76,6 +77,36 @@ async function startPolling() {
 }
 
 const cities = computed(() => [...new Set(results.value.map((r) => r.city).filter(Boolean))]);
+
+// P2#14：存在失败项时显示「重试失败项」按钮
+const failedCount = computed(
+  () => results.value.filter((r) => r.status === "failed").length
+);
+
+async function retryMatch(ids: number[]) {
+  retrying.value = true;
+  try {
+    const res = await api.retryMatchResults(ids, store.taskId ?? undefined);
+    ElMessage.success(
+      `已重试 ${res.generated} 个` + (res.errors.length ? `（${res.errors.length} 个仍失败）` : "")
+    );
+    await loadResults();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "重试失败");
+  } finally {
+    retrying.value = false;
+  }
+}
+
+// 单个失败项重试
+function retryOne(row: MatchResult) {
+  retryMatch([row.id]);
+}
+
+// 批量重试当前任务下所有失败项
+function retryFailedAll() {
+  retryMatch([]);
+}
 
 const filtered = computed(() =>
   results.value.filter((r) => {
@@ -173,6 +204,14 @@ onUnmounted(() => {
       >
         生成深度报告{{ selectedIds.length ? "（选中）" : "（全部）" }}
       </el-button>
+      <el-button
+        v-if="failedCount > 0"
+        type="warning"
+        :loading="retrying"
+        @click="retryFailedAll"
+      >
+        重试失败项（{{ failedCount }}）
+      </el-button>
       <el-button :type="results.length > 0 ? 'primary' : 'plain'" @click="exportExcel" :disabled="results.length === 0">
         导出 Excel
       </el-button>
@@ -204,6 +243,40 @@ onUnmounted(() => {
         <el-table-column label="等级" width="80">
           <template #default="{ row }">
             <span :class="['grade-tag', 'grade-' + row.level]">{{ row.level }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="匹配档" width="90">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.match_mode === 'quick'"
+              size="small"
+              type="info"
+            >快速</el-tag>
+            <el-tag
+              v-else-if="row.match_mode === 'deep'"
+              size="small"
+              type="warning"
+            >深度</el-tag>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }">
+            <template v-if="row.status === 'failed'">
+              <el-tag size="small" type="danger">失败</el-tag>
+              <el-button
+                link
+                type="warning"
+                size="small"
+                :loading="retrying"
+                @click.stop="retryOne(row)"
+                style="margin-left: 6px"
+              >重试</el-button>
+              <el-tooltip v-if="row.error_message" :content="row.error_message" placement="top">
+                <span class="muted" style="margin-left: 4px; cursor: help">ⓘ</span>
+              </el-tooltip>
+            </template>
+            <el-tag v-else size="small" type="success">正常</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="报告" width="90">

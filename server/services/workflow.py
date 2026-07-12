@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -23,7 +23,8 @@ from schemas.job import JobProfile
 from schemas.match import MatchResultModel
 from schemas.report import JobReport
 from schemas.resume import ResumeProfile
-from services import job_agent, match_agent, report_agent, resume_agent
+from services import item_run, job_agent, match_agent, match_core, report_agent, resume_agent
+from services.item_run import upsert_item_run
 from services.precheck import precheck_job
 from services.concurrency import AbortFlow, bounded_map
 
@@ -420,144 +421,169 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     resume = ResumeProfile.model_validate(state["resume_profile"])
     jobs = state.get("jobs_parsed", [])
     total = len(jobs)
-    results: list[dict] = []
     settings = get_settings()
-    done = 0
+    resume_id = state["resume_id"]
+    two_tier = bool(settings.match_two_tier)
+    top_k = max(1, settings.match_quick_top_k)
 
     # 并发可视化 / 计时所需的线程安全容器
     lock = threading.Lock()
     start_times: dict[int, float] = {}
     in_flight: set[int] = set()
     cached_jids: set[int] = set()
-    counts = {"failed": 0}
+    counts = {"failed": 0, "done": 0}
     durations: list[float] = []
     title_map = {it["job_id"]: (it["profile"] or {}).get("job_title", "") for it in jobs}
+    # jid -> (MatchResultModel, result_row_id)：最终（可能经 deep 覆盖）的匹配结果
+    final_map: dict[int, dict] = {}
 
-    def _find_cached_match(key: str):
-        db = SessionLocal()
-        try:
-            row = (
-                db.query(MatchResult)
-                .filter(MatchResult.cache_key == key)
-                .order_by(MatchResult.id.desc())
-                .first()
-            )
-            if row and row.detail_json:
-                return MatchResultModel.model_validate(row.detail_json)
-        finally:
-            db.close()
-        return None
-
-    def _worker(item):
-        # 实际跑 LLM；resume / mode 通过二次查 ORM 拿（避免在 jobs_parsed dict 里塞冗余字段）
-        jid = item["job_id"]
-        job = JobProfile.model_validate(item["profile"])
-        db = SessionLocal()
-        try:
-            j = db.get(Job, jid)
-            mode = (j.analyze_mode if j and j.analyze_mode else "summary")
-        finally:
-            db.close()
-        model = settings.llm_reasoning_model or settings.llm_model
-        key = match_agent.build_match_cache_key(
-            resume.model_dump(), job.model_dump(), model, mode
+    # 预建 queued 状态的单条执行记录，供前端实时看到排队
+    for it in jobs:
+        upsert_item_run(
+            task_id, "Match Agent", it["job_id"], title_map.get(it["job_id"], ""),
+            tier="quick", status="queued",
         )
-        item["_cache_key"] = key
-        # ── 硬条件预筛（规则，不消耗 LLM）──
-        pre = precheck_job(resume, job)
-        if not pre["passed"]:
-            # 不通过直接给出 0 分 / D 级结果，跳过 LLM 调用，省成本
-            return match_agent.build_hard_fail_result(pre["hard_failures"], job)
-        # ── 命中缓存：相同 简历+岗位+模型+模式+Prompt版本 时跳过 LLM ──
-        cached = _find_cached_match(key)
-        if cached is not None:
-            with lock:
-                cached_jids.add(jid)
-            return cached
-        with lock:
-            start_times[jid] = time.monotonic()
-            in_flight.add(jid)
-        resume_text = state.get("resume_text") if mode == "full" else None
-        return match_agent.run(resume, job, resume_text=resume_text, model_role="reasoning")
 
-    def _emit_progress(jid, done_n, label):
-        low, high = _calc_eta_range(durations, total, done_n, settings.match_agent_concurrency)
+    def _emit_progress(phase: str, done_n: int, label: str):
+        if phase == "quick":
+            progress = int(done_n / total * 70) if total else 70
+        else:
+            b_total = max(1, min(top_k, total))
+            progress = 70 + int(done_n / b_total * 30)
+        low, high = _calc_eta_range(durations, total, counts["done"], settings.match_agent_concurrency)
         with lock:
-            flight = [
-                {"job_id": j, "job_title": title_map.get(j, "")} for j in in_flight
-            ]
+            flight = [{"job_id": j, "job_title": title_map.get(j, "")} for j in in_flight]
             failed = counts["failed"]
         _update_run(
             task_id,
             "Match Agent",
-            progress=int(done_n / total * 100) if total else 100,
-            summary=f"已匹配 {done_n}/{total}" + (f"（{failed} 个失败）" if failed else ""),
+            progress=progress,
+            summary=f"已匹配 {counts['done']}/{total}"
+            + (f"（{failed} 个失败）" if failed else ""),
             current_item=label,
-            eta_seconds=_calc_eta(task_id, "Match Agent", total, done_n),
+            eta_seconds=_calc_eta(task_id, "Match Agent", total, counts["done"]),
             eta_low=low,
             eta_high=high,
             total_items=total,
-            completed_items=done_n,
+            completed_items=counts["done"],
             failed_items=failed,
             in_flight_items=flight,
         )
-
-    def _on_result(item, match, err):
-        nonlocal done
-        jid = item["job_id"]
-        now = time.monotonic()
-        with lock:
-            st = start_times.pop(jid, None)
-            in_flight.discard(jid)
-            if st is not None:
-                durations.append(now - st)
-        label = f"正在匹配岗位 {jid}（{done + 1}/{total}）"
-        if _is_aborted(task_id, "Match Agent"):
-            raise _AbortedByUser()
-        if err is not None or match is None:
-            with lock:
-                counts["failed"] += 1
-            state.setdefault("errors", []).append(f"match_jobs job {jid}: {err}")
-            done += 1
-            _emit_progress(jid, done, label + " — 失败")
-            return
-        db = SessionLocal()
-        try:
-            row = MatchResult(
-                resume_id=state["resume_id"],
-                job_id=jid,
-                task_id=task_id,
-                score=match.score,
-                level=match.level,
-                matched_points=match.matched_points,
-                missing_points=match.missing_points,
-                recommendation=match.recommendation,
-                risk_notes=match.risk_notes,
-                detail_json=match.model_dump(),
-                cache_key=item.get("_cache_key"),
-                cache_hit=(jid in cached_jids),
+        # 把在途 item 标记为 running（单条执行记录）
+        for j in in_flight:
+            upsert_item_run(
+                task_id, "Match Agent", j, title_map.get(j, ""), tier="quick", status="running"
             )
-            db.add(row)
-            db.commit()
-            results.append({"job_id": jid, "result_id": row.id, "match": match.model_dump()})
-        except Exception as e:  # noqa: BLE001
-            state.setdefault("errors", []).append(f"match_jobs commit job {jid}: {e}")
-            db.rollback()
-        finally:
-            db.close()
-        done += 1
-        _emit_progress(jid, done, label)
 
-    bounded_map(
-        jobs,
-        _worker,
-        max_concurrency=settings.match_agent_concurrency,
-        on_result=_on_result,
+    def _finish_item_run(jid, tier, st, now, status, error=""):
+        dur_ms = int((now - st) * 1000) if st is not None else 0
+        started = datetime.utcnow() - timedelta(milliseconds=dur_ms) if st is not None else None
+        upsert_item_run(
+            task_id, "Match Agent", jid, title_map.get(jid, ""), tier=tier,
+            status=status, error=error, started_at=started,
+            finished_at=datetime.utcnow(), duration_ms=dur_ms,
+        )
+
+    def _run_phase(tier: str, targets: list[dict], phase: str) -> None:
+        """对 targets 跑一档匹配；tier=quick 全量预排，tier=deep 仅 Top-K 深度。"""
+        if not targets:
+            return
+
+        def _worker(item):
+            jid = item["job_id"]
+            with lock:
+                start_times[jid] = time.monotonic()
+                in_flight.add(jid)
+            return match_core.run_single_match(resume.model_dump(), resume_id, jid, tier=tier)
+
+        def _on_result(item, oc, _err):
+            jid = item["job_id"]
+            now = time.monotonic()
+            with lock:
+                st = start_times.pop(jid, None)
+                in_flight.discard(jid)
+                if st is not None:
+                    durations.append(now - st)
+            if _is_aborted(task_id, "Match Agent"):
+                raise _AbortedByUser()
+            label = f"正在匹配岗位 {jid}（{counts['done'] + 1}/{total}）"
+            if oc is None or oc.match is None:
+                # 失败也落库，便于前端展示错误并支持单条重试
+                with lock:
+                    counts["failed"] += 1
+                # worker 抛异常时 oc 为 None（bounded_map 仅传 error）；否则取 oc.error
+                error = (oc.error if oc else None) or (_err or "未知错误")
+                error = str(error)
+                try:
+                    match_core.persist_match_row(
+                        task_id, resume_id, jid, None,
+                        (oc.key if oc else ""),
+                        (oc.cache_hit if oc else False),
+                        match_mode=tier, status="failed", error=error,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    state.setdefault("errors", []).append(f"match_jobs persist fail job {jid}: {e}")
+                _finish_item_run(jid, tier, st, now, "failed", error=error)
+                counts["done"] += 1
+                _emit_progress(phase, counts["done"], label + " — 失败")
+                return
+            try:
+                match_core.persist_match_row(
+                    task_id, resume_id, jid, oc.match, oc.key, oc.cache_hit,
+                    match_mode=tier, status="success",
+                )
+            except Exception as e:  # noqa: BLE001
+                state.setdefault("errors", []).append(f"match_jobs persist job {jid}: {e}")
+            if oc.cache_hit:
+                with lock:
+                    cached_jids.add(jid)
+            _finish_item_run(jid, tier, st, now, "done")
+            # 记录最终匹配（quick 先写，deep 后覆盖）
+            try:
+                row = (
+                    SessionLocal()
+                    .query(MatchResult)
+                    .filter(MatchResult.task_id == task_id, MatchResult.job_id == jid)
+                    .first()
+                )
+                rid = row.id if row else None
+                final_map[jid] = {"job_id": jid, "result_id": rid, "match": oc.match.model_dump()}
+            except Exception as e:  # noqa: BLE001
+                state.setdefault("errors", []).append(f"match_jobs query job {jid}: {e}")
+            counts["done"] += 1
+            _emit_progress(phase, counts["done"], label)
+
+        bounded_map(
+            targets,
+            _worker,
+            max_concurrency=settings.match_agent_concurrency,
+            on_result=_on_result,
+        )
+
+    # PHASE A：全量 quick（快速模型）出分排序
+    _run_phase("quick", jobs, "quick")
+
+    # 按 quick 分数选出 Top-K（仅成功项参与排序）
+    ranked = sorted(
+        (v for v in final_map.values() if v["match"].get("score") is not None),
+        key=lambda x: x["match"]["score"],
+        reverse=True,
     )
+    if two_tier:
+        # PHASE B：Top-K 用推理模型做深度匹配（覆盖 quick 结果）
+        deep_targets = [{"job_id": v["job_id"]} for v in ranked[:top_k]]
+        for t in deep_targets:
+            upsert_item_run(
+                task_id, "Match Agent", t["job_id"],
+                title_map.get(t["job_id"], ""), tier="deep", status="queued",
+            )
+        _run_phase("deep", deep_targets, "deep")
 
-    results.sort(key=lambda x: x["match"]["score"], reverse=True)
+    # 汇总最终匹配结果（按最终分数降序），供下游报告节点使用
+    results = sorted(final_map.values(), key=lambda x: x["match"]["score"], reverse=True)
     state["match_results"] = results
     top = results[0]["match"]["score"] if results else 0
+
     if not results:
         _update_run(
             task_id,
@@ -583,7 +609,8 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             progress=100,
             summary=f"完成 {len(results)} 个岗位评分，最高 {top} 分"
             + (f"（{counts['failed']} 个失败）" if counts["failed"] else "")
-            + (f"（{len(cached_jids)} 个命中缓存）" if cached_jids else ""),
+            + (f"（{len(cached_jids)} 个命中缓存）" if cached_jids else "")
+            + (f"（Top {top_k} 做深度匹配）" if two_tier else ""),
             output={"count": len(results)},
             eta_seconds=0,
             eta_low=0,

@@ -54,6 +54,8 @@ def init_db() -> None:
     _migrate_resume_cache()
     _migrate_agent_runs_progress_fields()
     _migrate_match_results_cache()
+    _migrate_match_results_status()
+    _migrate_agent_item_runs()
 
 
 def _enable_wal() -> None:
@@ -214,3 +216,33 @@ def _migrate_match_results_cache() -> None:
         for col, ddl in needed.items():
             if col not in columns:
                 conn.execute(text(ddl))
+
+
+def _migrate_match_results_status() -> None:
+    """为 match_results 补档位 / 状态 / 报告缓存键列（P1#7 / P1#8 / P2#14），幂等。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "match_results" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("match_results")}
+    needed = {
+        "match_mode": "ALTER TABLE match_results ADD COLUMN match_mode VARCHAR(8) DEFAULT 'deep'",
+        "status": "ALTER TABLE match_results ADD COLUMN status VARCHAR(16) DEFAULT 'success'",
+        "error_message": "ALTER TABLE match_results ADD COLUMN error_message TEXT DEFAULT ''",
+        "report_cache_key": "ALTER TABLE match_results ADD COLUMN report_cache_key VARCHAR(64)",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in columns:
+                conn.execute(text(ddl))
+
+
+def _migrate_agent_item_runs() -> None:
+    """新建 agent_item_runs 表（P2#10 单条执行记录），幂等。"""
+    from sqlalchemy import inspect
+
+    inspector = inspect(engine)
+    if "agent_item_runs" in inspector.get_table_names():
+        return
+    Base.metadata.create_all(bind=engine, tables=[Base.metadata.tables["agent_item_runs"]])

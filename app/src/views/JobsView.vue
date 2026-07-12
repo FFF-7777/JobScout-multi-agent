@@ -218,14 +218,31 @@ function onSelectionChange(rows: Job[]) {
   store.setSelectedJobIds(selectedIds.value);
 }
 
-function onCellClick(row: Job, _column: any, _cell: any, event: MouseEvent) {
-  // 点击 selection 列（checkbox）时不跳详情
+// JD 预览抽屉状态
+const previewJob = ref<Job | null>(null);
+const previewOpen = ref(false);
+function openJdPreview(row: Job) {
+  previewJob.value = row;
+  previewOpen.value = true;
+}
+function closeJdPreview() {
+  previewOpen.value = false;
+  previewJob.value = null;
+}
+
+function onCellClick(row: Job, column: any, _cell: any, event: MouseEvent) {
+  // 点击 selection 列（checkbox）时不跳详情、不开抽屉
   const target = event.target as HTMLElement;
   if (target.closest(".el-table__column--selection") || target.closest(".el-checkbox")) {
     return;
   }
   // 点击操作列时不跳详情
   if (target.closest(".el-table__fixed-right")) {
+    return;
+  }
+  // 点击 JD 预览列时弹 Drawer 卡片，不跳详情页
+  if (column?.label === "JD 预览") {
+    openJdPreview(row);
     return;
   }
   // 记录 window 滚动位置，回来时恢复
@@ -391,6 +408,55 @@ onMounted(refresh);
         </el-table-column>
       </el-table>
     </div>
+
+    <!-- JD 预览抽屉：点 JD 预览列弹出，可点外部空白 / ESC / 关闭按钮退出 -->
+    <el-drawer
+      v-model="previewOpen"
+      direction="rtl"
+      size="560px"
+      :with-header="true"
+      :close-on-click-modal="true"
+      :close-on-press-escape="true"
+      :show-close="true"
+      :destroy-on-close="true"
+      title="JD 预览"
+    >
+      <div v-if="previewJob" class="jd-preview-drawer">
+        <div class="jd-preview-meta">
+          <div class="jd-preview-title">
+            <span class="company">{{ previewJob.company_name || "（待解析）" }}</span>
+            <span class="dot">·</span>
+            <span class="role">{{ previewJob.job_title || "（待解析）" }}</span>
+          </div>
+          <div class="jd-preview-tags">
+            <el-tag v-if="previewJob.city" size="small" effect="plain">{{ previewJob.city }}</el-tag>
+            <el-tag v-if="previewJob.salary" size="small" effect="plain" type="success">
+              {{ previewJob.salary }}
+            </el-tag>
+            <el-tag v-if="previewJob.source" size="small" effect="plain" type="info">
+              来源：{{ previewJob.source }}
+            </el-tag>
+            <el-tag
+              v-if="previewJob.job_url"
+              size="small"
+              effect="plain"
+              type="warning"
+              @click="window.open(previewJob.job_url, '_blank')"
+              style="cursor: pointer"
+            >
+              打开原链接 ↗
+            </el-tag>
+          </div>
+        </div>
+        <pre class="jd-preview-text">{{ previewJob.jd_text || "（暂无 JD 文本）" }}</pre>
+        <div class="jd-preview-actions">
+          <el-button type="primary" @click="router.push(`/jobs/${previewJob.id}`)">
+            打开完整详情页 →
+          </el-button>
+          <el-button @click="closeJdPreview">关闭</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -462,5 +528,54 @@ onMounted(refresh);
 }
 .url-row .el-input {
   flex: 1;
+}
+
+/* JD 预览抽屉内部样式 */
+.jd-preview-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 4px 24px 4px;
+}
+.jd-preview-meta {
+  border-bottom: 1px solid #ebeef5;
+  padding-bottom: 12px;
+}
+.jd-preview-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f2630;
+  margin-bottom: 10px;
+}
+.jd-preview-title .dot {
+  margin: 0 6px;
+  color: #b8bfca;
+}
+.jd-preview-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.jd-preview-text {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #2c3340;
+  background: #f7f9ff;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 14px 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  margin: 0;
+}
+.jd-preview-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  border-top: 1px solid #ebeef5;
+  padding-top: 14px;
 }
 </style>

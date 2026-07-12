@@ -25,6 +25,8 @@ const STATUS_META: Record<string, { icon: string; color: string; label: string; 
   running: { icon: "◔", color: "#3a6ff7", label: "执行中", type: "primary" },
   success: { icon: "✓", color: "#2fae5f", label: "完成", type: "success" },
   failed: { icon: "✕", color: "#e64545", label: "失败", type: "danger" },
+  // cancelled 实际不在后端存储里，模板层根据 error_message === "用户中止" 切换
+  cancelled: { icon: "∅", color: "#8a94a6", label: "已取消", type: "info" },
 };
 
 const TASK_STATUS_META: Record<string, { label: string; type: any }> = {
@@ -33,6 +35,30 @@ const TASK_STATUS_META: Record<string, { label: string; type: any }> = {
   completed_with_errors: { label: "部分完成", type: "warning" },
   failed: { label: "执行失败", type: "danger" },
 };
+
+/** 后端以 failed + "用户中止" 表达取消；前端在展示层把它当作「已取消」语义。 */
+function isCancelled(step: AgentRun): boolean {
+  return step.status === "failed" && step.error_message === "用户中止";
+}
+function stepStatusKey(step: AgentRun): string {
+  return isCancelled(step) ? "cancelled" : step.status;
+}
+
+/** 任务整体是否被用户取消（即所有 step 都被 abort，没有真失败）。 */
+const taskCancelled = computed(() => {
+  if (!steps.value.length) return false;
+  return steps.value.every(isCancelled);
+});
+
+const taskStatusKey = computed(() => {
+  if (taskCancelled.value) return "cancelled";
+  return status.value;
+});
+
+const taskStatusMeta = computed(() => {
+  if (taskCancelled.value) return { label: "已取消", type: "info" };
+  return TASK_STATUS_META[status.value] ?? { label: status.value || "尚未开始", type: "primary" };
+});
 
 function stopPoll() {
   if (pollTimer) {
@@ -171,6 +197,17 @@ async function abort() {
   }
 }
 
+function reset() {
+  // 清空当前任务状态，回到「尚未开始」。后端的历史 agent_runs 保留，store.taskId 清掉即可。
+  stopPoll();
+  running.value = false;
+  status.value = "";
+  steps.value = [];
+  taskStartedAt.value = null;
+  store.setTask("");
+  ElMessage.success("已重置任务状态");
+}
+
 function fmt(v: any) {
   return JSON.stringify(v, null, 2);
 }
@@ -248,8 +285,8 @@ onUnmounted(stopPoll);
     <div class="card toolbar">
       <div>
         当前简历：<b>{{ store.resumeName || "未选择" }}</b>
-        <el-tag v-if="status" style="margin-left: 12px" :type="TASK_STATUS_META[status]?.type || 'primary'">
-          {{ TASK_STATUS_META[status]?.label || status }}
+        <el-tag v-if="status" style="margin-left: 12px" :type="taskStatusMeta.type">
+          {{ taskStatusMeta.label }}
         </el-tag>
       </div>
       <div class="toolbar-stats" v-if="running && !isFinished(status)">
@@ -287,7 +324,7 @@ onUnmounted(stopPoll);
       <el-progress
         :percentage="overallProgress"
         :stroke-width="14"
-        :status="status === 'completed' ? 'success' : status === 'failed' ? 'exception' : undefined"
+        :status="taskStatusKey === 'completed' ? 'success' : taskStatusKey === 'cancelled' ? 'warning' : taskStatusKey === 'failed' ? 'exception' : undefined"
         :indeterminate="status === 'running' && overallProgress === 0"
       />
     </div>
@@ -295,8 +332,8 @@ onUnmounted(stopPoll);
     <div class="timeline">
       <div v-for="(s, i) in steps" :key="s.id" class="tl-item">
         <div class="tl-left">
-          <div :class="['tl-dot', { pulse: s.status === 'running' }]" :style="{ background: STATUS_META[s.status]?.color }">
-            {{ STATUS_META[s.status]?.icon }}
+          <div :class="['tl-dot', { pulse: s.status === 'running' }]" :style="{ background: STATUS_META[stepStatusKey(s)]?.color }">
+            {{ STATUS_META[stepStatusKey(s)]?.icon }}
           </div>
           <div v-if="i < steps.length - 1" class="tl-line" />
         </div>
@@ -307,8 +344,8 @@ onUnmounted(stopPoll);
               <span v-if="s.status === 'running' && s.current_item" class="tl-current">
                 {{ s.current_item }}
               </span>
-              <el-tag size="small" :color="STATUS_META[s.status]?.color" style="color: #fff; border: none">
-                {{ STATUS_META[s.status]?.label }}
+              <el-tag size="small" :color="STATUS_META[stepStatusKey(s)]?.color" style="color: #fff; border: none">
+                {{ STATUS_META[stepStatusKey(s)]?.label }}
               </el-tag>
             </div>
           </div>
@@ -316,7 +353,7 @@ onUnmounted(stopPoll);
             <el-progress
               :percentage="progressPercent(s)"
               :stroke-width="10"
-              :status="s.status === 'success' ? 'success' : s.status === 'failed' ? 'exception' : undefined"
+              :status="s.status === 'success' ? 'success' : isCancelled(s) ? 'warning' : s.status === 'failed' ? 'exception' : undefined"
               :indeterminate="s.status === 'running' && (s.progress || 0) === 0"
             />
           </div>
@@ -330,7 +367,8 @@ onUnmounted(stopPoll);
             </span>
           </div>
           <div class="tl-summary">{{ s.summary || "—" }}</div>
-          <div v-if="s.error_message" class="tl-error">错误：{{ s.error_message }}</div>
+          <div v-if="s.error_message && !isCancelled(s)" class="tl-error">错误：{{ s.error_message }}</div>
+          <div v-else-if="isCancelled(s)" class="tl-cancelled">用户已中断此节点</div>
           <el-collapse v-if="s.output_json">
             <el-collapse-item title="查看完整输出">
               <pre class="tl-json">{{ fmt(s.output_json) }}</pre>
@@ -460,6 +498,11 @@ onUnmounted(stopPoll);
 }
 .tl-error {
   color: #e64545;
+  font-size: 13px;
+  margin-top: 6px;
+}
+.tl-cancelled {
+  color: #8a94a6;
   font-size: 13px;
   margin-top: 6px;
 }

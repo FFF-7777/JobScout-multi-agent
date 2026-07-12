@@ -417,7 +417,13 @@ onMounted(refresh);
         >
           <div class="detail-modal" @mousedown.stop>
             <button class="detail-close" @click="closeDetail" title="关闭">×</button>
-            <JobDetailView v-if="detailJobId !== null" :key="detailJobId" @close="closeDetail" />
+            <JobDetailView
+              v-if="detailJobId !== null"
+              :key="detailJobId"
+              :job-id-prop="detailJobId"
+              :embedded="true"
+              @close="closeDetail"
+            />
           </div>
         </div>
       </transition>

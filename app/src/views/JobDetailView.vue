@@ -1,16 +1,28 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api, type Job, type MatchResult } from "@/api";
 import { useAppStore } from "@/stores/app";
 
+const props = defineProps<{
+  /** 当作为 modal 嵌入时，从父组件传 jobId 覆盖 route.params.id */
+  jobIdProp?: number | null;
+  /** 当作为 modal 嵌入时，禁用内部跳路由（无效 ID 时不 router.replace） */
+  embedded?: boolean;
+}>();
+const emit = defineEmits<{ (e: "close"): void }>();
+
 const route = useRoute();
 const router = useRouter();
 const store = useAppStore();
 
-const rawId = Number(route.params.id);
-const jobId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
+function resolveJobId(): number | null {
+  if (typeof props.jobIdProp === "number" && props.jobIdProp > 0) return props.jobIdProp;
+  const raw = Number(route.params.id);
+  return Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
 const job = ref<Job | null>(null);
 const match = ref<MatchResult | null>(null);
 const loading = ref(true);
@@ -26,17 +38,22 @@ const DIM_LABELS: Record<string, string> = {
   logistics: "城市/薪资",
 };
 
-async function load() {
-  if (jobId === null) {
+async function load(targetId?: number | null) {
+  const id = targetId ?? resolveJobId();
+  if (id === null) {
     ElMessage.error("无效的岗位 ID");
-    router.replace("/jobs");
+    if (!props.embedded) {
+      router.replace("/jobs");
+    } else {
+      emit("close");
+    }
     return;
   }
   loading.value = true;
   try {
-    job.value = await api.getJob(jobId);
+    job.value = await api.getJob(id);
     const results = await api.listResults(store.taskId || undefined);
-    match.value = results.find((r) => r.job_id === jobId) || null;
+    match.value = results.find((r) => r.job_id === id) || null;
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "加载失败");
   } finally {
@@ -44,12 +61,27 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => load());
+// 父组件切 jobId 时重新加载
+watch(
+  () => props.jobIdProp,
+  (newId, oldId) => {
+    if (newId !== oldId) load(newId);
+  }
+);
+
+function goBack() {
+  if (props.embedded) {
+    emit("close");
+  } else {
+    router.back();
+  }
+}
 </script>
 
 <template>
   <div class="page" v-loading="loading">
-    <el-button link type="primary" @click="router.back()">← 返回</el-button>
+    <el-button link type="primary" @click="goBack()">← 返回</el-button>
     <el-empty v-if="!loading && !job" description="未找到该岗位（可能已被删除）" />
     <div v-else-if="job" class="big-card">
       <div class="big-card-head">

@@ -38,7 +38,8 @@ class Settings(BaseSettings):
     baidu_ocr_secret_key: str = ""
 
     # OCR 服务商选择：baidu / tencent（控制图片导入走哪家）
-    ocr_provider: str = "baidu"
+    # 默认腾讯：免费档 10 QPS（百度仅 ~2 QPS），20 张图约 2s 而非 10s
+    ocr_provider: str = "tencent"
     # 腾讯云 OCR（备选）
     tencent_ocr_secret_id: str = ""
     tencent_ocr_secret_key: str = ""

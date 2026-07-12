@@ -95,7 +95,7 @@ docker compose up --build
 | `DATABASE_URL` | 数据库连接 | `sqlite:///./internscout.db` |
 | `CORS_ORIGINS` | 允许跨域来源 | `*` |
 | `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` | 百度 OCR 凭证（截图导入用） | — |
-| `OCR_PROVIDER` | OCR 服务商：`baidu`（默认）/ `tencent` | `baidu` |
+| `OCR_PROVIDER` | OCR 服务商：`tencent`（默认，10 QPS）/ `baidu`（~2 QPS） | `tencent` |
 | `TENCENT_OCR_SECRET_ID` / `TENCENT_OCR_SECRET_KEY` | 腾讯云 OCR 凭证（`OCR_PROVIDER=tencent` 时启用） | — |
 | `FULL_MODE_LIMIT` | 单次任务深度分析岗位上限 | `10` |
 

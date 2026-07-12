@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import time
@@ -20,6 +21,33 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+class _RateLimiter:
+    """简单令牌桶：把平均发起速率压到 rate 次/秒以内，规避服务商 QPS 限流。"""
+
+    def __init__(self, rate: float):
+        self.interval = 1.0 / rate if rate and rate > 0 else 0.0
+        self._lock = asyncio.Lock()
+        self._next = 0.0
+
+    async def acquire(self):
+        if self.interval <= 0:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            if self._next < now:
+                self._next = now + self.interval
+            else:
+                wait = self._next - now
+                self._next += self.interval
+                await asyncio.sleep(wait)
+
+
+def _is_throttle(err: Exception) -> bool:
+    """判断异常是否为 QPS / 频率限流（可重试）。"""
+    s = str(err).lower()
+    return ("qps" in s) or ("requestlimitexceeded" in s) or ("frequency limit" in s)
 
 # ── 全局 token 缓存 ───────────────────────────────────────────────
 _cached_token: str = ""
@@ -138,29 +166,42 @@ async def recognize_image(image_bytes: bytes, filename: str = "") -> str:
 
 
 async def recognize_images_batch(
-    images: list[tuple[bytes, str]], max_concurrency: int = 5
+    images: list[tuple[bytes, str]],
+    max_concurrency: int = 3,
+    rate_per_sec: float = 2.0,
+    max_retries: int = 4,
 ) -> list[dict]:
-    """批量识别多张图片。
+    """批量识别多张图片（带速率限制 + 限流重试）。
 
     Args:
         images: [(image_bytes, filename), ...]
-        max_concurrency: 并发上限
+        max_concurrency: 同时在途请求数上限
+        rate_per_sec: 平均发起速率上限（次/秒）。百度高精度免费档约 2 QPS，
+                      超出会被 error 18 限流，故默认 2 并配合重试兜底。
+        max_retries: 命中 QPS 限流时的重试次数
 
     Returns:
         [{"filename": ..., "text": ...}, {"filename": ..., "error": ...}, ...] 顺序与输入一致
     """
-    import asyncio
-
     sem = asyncio.Semaphore(max_concurrency)
+    limiter = _RateLimiter(rate_per_sec)
 
     async def _one(idx: int, data: bytes, name: str) -> tuple[int, dict]:
         async with sem:
-            try:
-                text = await recognize_image(data, name)
-                return idx, {"filename": name, "text": text}
-            except Exception as e:
-                logger.error("图片 %s OCR 失败：%s", name, e)
-                return idx, {"filename": name, "error": str(e)}
+            last_err = None
+            for attempt in range(max_retries + 1):
+                await limiter.acquire()
+                try:
+                    text = await recognize_image(data, name)
+                    return idx, {"filename": name, "text": text}
+                except Exception as e:
+                    last_err = e
+                    if _is_throttle(e) and attempt < max_retries:
+                        await asyncio.sleep(0.5 * (2 ** attempt))
+                        continue
+                    logger.error("图片 %s OCR 失败：%s", name, e)
+                    return idx, {"filename": name, "error": str(e)}
+            return idx, {"filename": name, "error": f"重试后仍失败: {last_err}"}
 
     tasks = [_one(i, d, n) for i, (d, n) in enumerate(images)]
     results = await asyncio.gather(*tasks)

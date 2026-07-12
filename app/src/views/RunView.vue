@@ -76,16 +76,19 @@ async function poll(taskId: string) {
     const t = await api.getTask(taskId);
     steps.value = t.steps;
     status.value = t.status;
-    // 用第一个 step 的 started_at 当作任务起始时间
-    const firstStarted = t.steps.find((s) => s.started_at)?.started_at;
-    if (firstStarted && taskStartedAt.value === null) {
-      taskStartedAt.value = new Date(firstStarted).getTime();
-    } else if (!firstStarted && taskStartedAt.value === null) {
-      taskStartedAt.value = Date.now();
-    }
     if (isFinished(t.status)) {
+      // 任务结束：清掉任务起始时间，已耗时归零；停止秒表避免空转
+      taskStartedAt.value = null;
       running.value = false;
       stopPoll();
+    } else {
+      // 用第一个 step 的 started_at 当作任务起始时间（仅在 running 时）
+      const firstStarted = t.steps.find((s) => s.started_at)?.started_at;
+      if (firstStarted && taskStartedAt.value === null) {
+        taskStartedAt.value = new Date(firstStarted).getTime();
+      } else if (!firstStarted && taskStartedAt.value === null) {
+        taskStartedAt.value = Date.now();
+      }
     }
     connError.value = false;
   } catch {
@@ -205,7 +208,7 @@ onUnmounted(stopPoll);
           {{ TASK_STATUS_META[status]?.label || status }}
         </el-tag>
       </div>
-      <div class="toolbar-stats" v-if="running || isFinished(status)">
+      <div class="toolbar-stats" v-if="running && !isFinished(status)">
         <div class="stat">
           <span class="stat-label">已耗时</span>
           <span class="stat-value">{{ fmtDuration(totalElapsedSec) }}</span>

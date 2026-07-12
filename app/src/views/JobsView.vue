@@ -17,8 +17,6 @@ const jobs = ref<Job[]>([]);
 const selectedIds = ref<number[]>([]);
 // 行级 loading：行 ID -> 是否在解析
 const analyzingIds = ref<Set<number>>(new Set());
-// 行级 loading：行 ID -> 是否在切换分析模式
-const modeSavingIds = ref<Set<number>>(new Set());
 // 全文模式上限（与后端 _FULL_MODE_LIMIT 同步）
 const FULL_MODE_LIMIT = 10;
 
@@ -27,26 +25,42 @@ const selectedCount = computed(() => selectedIds.value.length);
 const fullModeCount = computed(
   () => jobs.value.filter((j) => (j.analyze_mode || "summary") === "full").length
 );
+// 工具栏里那个「分析模式」el-select 的当前值（"summary" | "full"）。
+// 没有选中时禁用，值为 "summary" 占位。
+const bulkMode = ref<"summary" | "full">("summary");
 
-async function changeMode(row: Job, mode: "summary" | "full") {
-  const prev = row.analyze_mode || "summary";
-  if (mode === "full" && prev !== "full" && fullModeCount.value >= FULL_MODE_LIMIT) {
-    ElMessage.warning(
-      `全文模式一次最多 ${FULL_MODE_LIMIT} 个岗位（当前已有 ${fullModeCount.value} 个），先把别的切回精简再试`
-    );
-    return;
+async function setModeForSelected(mode: "summary" | "full") {
+  if (!hasSelected.value) return;
+  const ids = [...selectedIds.value];
+  // 上限校验：粗略先按后端拒绝的会再回滚
+  if (mode === "full") {
+    const willFull =
+      jobs.value.filter(
+        (j) => ids.includes(j.id) && (j.analyze_mode || "summary") !== "full"
+      ).length;
+    if (fullModeCount.value + willFull > FULL_MODE_LIMIT) {
+      ElMessage.warning(
+        `全文模式一次最多 ${FULL_MODE_LIMIT} 个岗位（当前已有 ${fullModeCount.value} 个），先把别的切回精简再试`
+      );
+      return;
+    }
   }
-  modeSavingIds.value.add(row.id);
+  loading.value = true;
   try {
-    const updated = await api.setJobAnalyzeMode(row.id, mode);
-    // 用后端返回值刷新该行（保持其他字段一致）
-    const idx = jobs.value.findIndex((j) => j.id === row.id);
-    if (idx >= 0) jobs.value[idx] = updated;
-    ElMessage.success(mode === "full" ? "已切换为全文模式（更准但更慢）" : "已切换为精简模式");
+    // 串行设置，避免给后端并发打满；通常选中只有几个，可接受
+    for (const id of ids) {
+      await api.setJobAnalyzeMode(id, mode);
+    }
+    ElMessage.success(
+      mode === "full"
+        ? `已将 ${ids.length} 个岗位切换为全文模式`
+        : `已将 ${ids.length} 个岗位切换为精简模式`
+    );
+    await refresh();
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "切换失败");
   } finally {
-    modeSavingIds.value.delete(row.id);
+    loading.value = false;
   }
 }
 
@@ -244,6 +258,17 @@ onMounted(refresh);
         <div class="section-h" style="margin: 0">待分析岗位（{{ jobs.length }}）</div>
         <div class="toolbar-right">
           <span v-if="hasSelected" class="sel-hint">已选 {{ selectedCount }} 个</span>
+          <el-select
+            :model-value="bulkMode"
+            size="default"
+            :disabled="!hasSelected"
+            :loading="loading"
+            style="width: 110px"
+            @change="(v: 'summary' | 'full') => { bulkMode = v; setModeForSelected(v); }"
+          >
+            <el-option label="精简模式" value="summary" />
+            <el-option label="全文模式" value="full" />
+          </el-select>
           <el-button :disabled="!hasSelected" :loading="loading" @click="reanalyzeSelected">
             批量重新解析
           </el-button>
@@ -285,17 +310,15 @@ onMounted(refresh);
         <el-table-column prop="city" label="城市" width="90" />
         <el-table-column prop="salary" label="薪资" width="110" />
         <el-table-column prop="source" label="来源" width="90" />
-        <el-table-column label="分析模式" width="130">
+        <el-table-column label="分析模式" width="100">
           <template #default="{ row }">
-            <el-select
-              :model-value="row.analyze_mode || 'summary'"
+            <el-tag
               size="small"
-              :disabled="modeSavingIds.has(row.id)"
-              @change="(v: 'summary' | 'full') => changeMode(row, v)"
+              :type="(row.analyze_mode || 'summary') === 'full' ? 'warning' : 'info'"
+              effect="light"
             >
-              <el-option label="精简" value="summary" />
-              <el-option label="全文" value="full" />
-            </el-select>
+              {{ (row.analyze_mode || "summary") === "full" ? "全文" : "精简" }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="JD 预览" min-width="220">

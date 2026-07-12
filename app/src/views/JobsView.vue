@@ -17,9 +17,38 @@ const jobs = ref<Job[]>([]);
 const selectedIds = ref<number[]>([]);
 // 行级 loading：行 ID -> 是否在解析
 const analyzingIds = ref<Set<number>>(new Set());
+// 行级 loading：行 ID -> 是否在切换分析模式
+const modeSavingIds = ref<Set<number>>(new Set());
+// 全文模式上限（与后端 _FULL_MODE_LIMIT 同步）
+const FULL_MODE_LIMIT = 10;
 
 const hasSelected = computed(() => selectedIds.value.length > 0);
 const selectedCount = computed(() => selectedIds.value.length);
+const fullModeCount = computed(
+  () => jobs.value.filter((j) => (j.analyze_mode || "summary") === "full").length
+);
+
+async function changeMode(row: Job, mode: "summary" | "full") {
+  const prev = row.analyze_mode || "summary";
+  if (mode === "full" && prev !== "full" && fullModeCount.value >= FULL_MODE_LIMIT) {
+    ElMessage.warning(
+      `全文模式一次最多 ${FULL_MODE_LIMIT} 个岗位（当前已有 ${fullModeCount.value} 个），先把别的切回精简再试`
+    );
+    return;
+  }
+  modeSavingIds.value.add(row.id);
+  try {
+    const updated = await api.setJobAnalyzeMode(row.id, mode);
+    // 用后端返回值刷新该行（保持其他字段一致）
+    const idx = jobs.value.findIndex((j) => j.id === row.id);
+    if (idx >= 0) jobs.value[idx] = updated;
+    ElMessage.success(mode === "full" ? "已切换为全文模式（更准但更慢）" : "已切换为精简模式");
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "切换失败");
+  } finally {
+    modeSavingIds.value.delete(row.id);
+  }
+}
 
 async function refresh() {
   try {
@@ -229,6 +258,9 @@ onMounted(refresh);
           </el-button>
           <el-button type="primary" @click="startAnalyze">开始分析 →</el-button>
         </div>
+        <div v-if="fullModeCount > 0" class="mode-hint">
+          全文模式：{{ fullModeCount }} / {{ FULL_MODE_LIMIT }}（更精准，单次 LLM 耗时翻倍）
+        </div>
       </div>
       <el-table
         :data="jobs"
@@ -248,6 +280,19 @@ onMounted(refresh);
         <el-table-column prop="city" label="城市" width="90" />
         <el-table-column prop="salary" label="薪资" width="110" />
         <el-table-column prop="source" label="来源" width="90" />
+        <el-table-column label="分析模式" width="130">
+          <template #default="{ row }">
+            <el-select
+              :model-value="row.analyze_mode || 'summary'"
+              size="small"
+              :disabled="modeSavingIds.has(row.id)"
+              @change="(v: 'summary' | 'full') => changeMode(row, v)"
+            >
+              <el-option label="精简" value="summary" />
+              <el-option label="全文" value="full" />
+            </el-select>
+          </template>
+        </el-table-column>
         <el-table-column label="JD 预览" min-width="220">
           <template #default="{ row }">
             <span class="jd-prev">{{ row.jd_text?.slice(0, 40) }}…</span>
@@ -290,6 +335,11 @@ onMounted(refresh);
   color: #3a6ff7;
   font-size: 13px;
   font-weight: 600;
+}
+.mode-hint {
+  color: #b88218;
+  font-size: 12px;
+  margin-top: 6px;
 }
 .hint {
   color: #8a94a6;

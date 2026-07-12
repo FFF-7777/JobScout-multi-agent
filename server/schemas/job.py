@@ -46,6 +46,7 @@ class JobOut(BaseModel):
     experience: str
     jd_text: str
     job_url: str
+    analyze_mode: str = "summary"
     created_at: datetime | None = None
     analysis: dict | None = None
 

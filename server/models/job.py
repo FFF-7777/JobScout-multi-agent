@@ -22,6 +22,8 @@ class Job(Base):
     experience: Mapped[str] = mapped_column(String(64), default="")
     jd_text: Mapped[str] = mapped_column(Text, default="")
     job_url: Mapped[str] = mapped_column(String(512), default="")
+    # 分析模式：summary（默认，只用画像 JSON）/ full（额外喂简历全文，更准但慢）
+    analyze_mode: Mapped[str] = mapped_column(String(16), default="summary")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

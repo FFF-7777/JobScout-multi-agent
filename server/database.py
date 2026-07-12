@@ -49,6 +49,7 @@ def init_db() -> None:
     _migrate_agent_runs_progress()
     _migrate_agent_runs_timestamps()
     _migrate_agent_runs_eta()
+    _migrate_jobs_analyze_mode()
 
 
 def _enable_wal() -> None:
@@ -111,3 +112,18 @@ def _migrate_agent_runs_eta() -> None:
         for col, ddl in needed.items():
             if col not in columns:
                 conn.execute(text(ddl))
+
+
+def _migrate_jobs_analyze_mode() -> None:
+    """为 jobs 补 analyze_mode 列（summary / full），幂等。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "jobs" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("jobs")}
+    if "analyze_mode" not in columns:
+        with engine.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE jobs ADD COLUMN analyze_mode VARCHAR(16) DEFAULT 'summary'")
+            )

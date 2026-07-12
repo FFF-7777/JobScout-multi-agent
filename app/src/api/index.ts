@@ -44,6 +44,7 @@ export interface Job {
   salary: string;
   jd_text: string;
   job_url: string;
+  analyze_mode: "summary" | "full";
   analysis: JobProfile | null;
 }
 export interface AgentRun {
@@ -155,6 +156,10 @@ export const api = {
   batchAnalyzeJobs: (ids: number[]) =>
     http
       .post<BatchAnalyzeItem[]>("/api/jobs/analyze-batch", { ids })
+      .then((r) => r.data),
+  setJobAnalyzeMode: (id: number, mode: "summary" | "full") =>
+    http
+      .put<Job>(`/api/jobs/${id}/analyze-mode`, { analyze_mode: mode })
       .then((r) => r.data),
 
   runAgents: (resume_id: number, job_ids: number[]) =>

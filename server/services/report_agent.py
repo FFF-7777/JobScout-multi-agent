@@ -12,12 +12,26 @@ from services import llm_service
 
 
 def run(
-    resume: ResumeProfile, job: JobProfile, match: MatchResultModel
+    resume: ResumeProfile,
+    job: JobProfile,
+    match: MatchResultModel,
+    *,
+    resume_text: str | None = None,
 ) -> JobReport:
+    """生成单岗位投递建议 + 面试准备。
+
+    resume_text：可选简历原文（截断 8000 char），让模型能引用具体项目细节。
+    """
+    resume_block = json.dumps(resume.model_dump(), ensure_ascii=False)
+    if resume_text:
+        resume_block += (
+            "\n\n--- 简历原文（用于引用项目细节 / 自我评价）---\n"
+            + resume_text[:8000]
+        )
     data = llm_service.chat_json(
         prompts.REPORT_SYSTEM,
         prompts.REPORT_USER.format(
-            resume_profile=json.dumps(resume.model_dump(), ensure_ascii=False),
+            resume_profile=resume_block,
             job_profile=json.dumps(job.model_dump(), ensure_ascii=False),
             match_result=json.dumps(match.model_dump(), ensure_ascii=False),
         ),

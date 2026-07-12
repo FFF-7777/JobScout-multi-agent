@@ -389,9 +389,16 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     done = 0
 
     def _worker(item):
-        # 实际跑 LLM；resume 通过闭包传进去
+        # 实际跑 LLM；resume / mode 通过二次查 ORM 拿（避免在 jobs_parsed dict 里塞冗余字段）
         job = JobProfile.model_validate(item["profile"])
-        return match_agent.run(resume, job)
+        db = SessionLocal()
+        try:
+            j = db.get(Job, item["job_id"])
+            mode = (j.analyze_mode if j and j.analyze_mode else "summary")
+        finally:
+            db.close()
+        resume_text = state.get("resume_text") if mode == "full" else None
+        return match_agent.run(resume, job, resume_text=resume_text)
 
     def _on_result(item, match, err):
         nonlocal done
@@ -501,7 +508,14 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
     def _worker(mr):
         job = JobProfile.model_validate(_parsed_map_safe(parsed_map, mr["job_id"]))
         match = MatchResultModel.model_validate(mr["match"])
-        return report_agent.run(resume, job, match)
+        db = SessionLocal()
+        try:
+            j = db.get(Job, mr["job_id"])
+            mode = (j.analyze_mode if j and j.analyze_mode else "summary")
+        finally:
+            db.close()
+        resume_text = state.get("resume_text") if mode == "full" else None
+        return report_agent.run(resume, job, match, resume_text=resume_text)
 
     def _on_result(mr_payload, report, err):
         nonlocal done

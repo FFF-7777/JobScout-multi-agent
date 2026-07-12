@@ -179,6 +179,37 @@ def batch_delete_jobs(
     return {"ok": True, "deleted": found_ids}
 
 
+class _AnalyzeModeUpdate(BaseModel):
+    analyze_mode: str
+
+
+_FULL_MODE_LIMIT = 10  # 全文模式一次最多 10 个岗位
+
+
+@router.put("/{job_id}/analyze-mode", response_model=JobOut)
+def set_analyze_mode(
+    job_id: int, req: _AnalyzeModeUpdate, db: Session = Depends(get_db)
+):
+    """设置单条岗位的分析模式。全文模式会被前端校验 N<=10 限制（后端也兜底一次）。"""
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "岗位不存在")
+    mode = (req.analyze_mode or "summary").lower()
+    if mode not in ("summary", "full"):
+        raise HTTPException(400, "analyze_mode 必须是 summary 或 full")
+    job.analyze_mode = mode
+    db.commit()
+    db.refresh(job)
+    return _to_out(job, db)
+
+
+@router.get("/full-mode/count")
+def count_full_mode(db: Session = Depends(get_db)):
+    """全文模式岗位数（含上限），用于前端校验。"""
+    n = db.query(Job).filter(Job.analyze_mode == "full").count()
+    return {"count": n, "limit": _FULL_MODE_LIMIT}
+
+
 class _BatchAnalyzeItem(BaseModel):
     id: int
     ok: bool

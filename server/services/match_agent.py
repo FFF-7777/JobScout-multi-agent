@@ -70,11 +70,28 @@ def _recommendation_of(level: str) -> str:
     }[level]
 
 
-def run(resume: ResumeProfile, job: JobProfile) -> MatchResultModel:
+def run(
+    resume: ResumeProfile,
+    job: JobProfile,
+    *,
+    resume_text: str | None = None,
+) -> MatchResultModel:
+    """匹配评分。
+
+    resume_text：可选，简历原文（截断到 8000 char）。提供时让模型同时看到
+    结构化画像 + 原文细节，匹配点/缺口更精准，但 prompt token 翻倍、
+    单次 LLM 调用更慢。
+    """
+    resume_block = json.dumps(resume.model_dump(), ensure_ascii=False)
+    if resume_text:
+        resume_block += (
+            "\n\n--- 简历原文（用于引用项目细节 / 自我评价）---\n"
+            + resume_text[:8000]
+        )
     llm_out = llm_service.chat_json(
         prompts.MATCH_SYSTEM,
         prompts.MATCH_USER.format(
-            resume_profile=json.dumps(resume.model_dump(), ensure_ascii=False),
+            resume_profile=resume_block,
             job_profile=json.dumps(job.model_dump(), ensure_ascii=False),
         ),
     )

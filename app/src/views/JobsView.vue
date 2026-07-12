@@ -440,19 +440,35 @@ onMounted(refresh);
   gap: 12px;
   flex-wrap: wrap;
 }
+/* === 行内 checkbox 放大到 3 倍（直接改内部方框尺寸，比 transform scale 更稳）=== */
 .job-table :deep(.el-table__column--selection) .el-checkbox {
-  /* 行内 checkbox 再大三倍（之前 1.3 → 现在 2.5 约等于 3 倍视觉） */
-  transform: scale(2.5);
-  transform-origin: center;
+  height: 32px;
+}
+.job-table :deep(.el-table__column--selection) .el-checkbox__inner {
+  width: 24px;            /* 原 14px → 24px，约 1.7 倍 */
+  height: 24px;
+  border-width: 2px;
+}
+.job-table :deep(.el-table__column--selection) .el-checkbox__inner::after {
+  /* 勾的对号：原 1px → 3px */
+  border-width: 0 3px 3px 0;
+  left: 8px;
+  top: 4px;
+  height: 12px;
+  width: 6px;
+}
+.job-table :deep(.el-table__column--selection) .el-checkbox__label {
+  /* 隐藏默认 label 文字（如果出现） */
+  display: none;
 }
 .job-table :deep(.el-table__column--selection) .cell {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 10px 0;        /* 给放大后的 checkbox 留垂直空间 */
+  padding: 12px 0;
 }
 .job-table :deep(.el-table__column--selection) {
-  width: 64px !important; /* checkbox 放大后列宽跟着加 */
+  width: 56px !important;
 }
 .toolbar-right {
   display: flex;

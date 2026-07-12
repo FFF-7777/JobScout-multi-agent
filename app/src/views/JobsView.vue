@@ -149,6 +149,38 @@ async function importImages(uploadedFiles: File[]) {
 // 改用 before-upload 收集文件 + 手动按钮触发
 const pendingImageFiles = ref<File[]>([]);
 
+/** 剪贴板粘贴：Ctrl+V 粘贴截图自动收集到待确认队列 */
+function handlePaste(e: ClipboardEvent) {
+  const items = Array.from(e.clipboardData?.items || []);
+  const imageFiles: File[] = [];
+  for (const item of items) {
+    if (item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) imageFiles.push(file);
+    }
+  }
+  if (!imageFiles.length) return; // 不是图片，让浏览器默认处理（文本粘贴到 textarea 等）
+  // 阻止默认行为（避免图片被粘贴到 textarea 里变成 base64 文字）
+  e.preventDefault();
+  e.stopPropagation();
+
+  // 给粘贴的文件一个友好名字（按序号）
+  const named = imageFiles.map(
+    (f, i) => new File([f], `clipboard_${Date.now()}_${i + 1}.${f.type.split("/")[1] || "png"}`, { type: f.type })
+  );
+  pendingImageFiles.value.push(...named);
+
+  ElMessage.success(
+    `已粘贴 ${named.length} 张图片到待导入队列（共 ${pendingImageFiles.value.length} 张），请点「确认导入」`
+  );
+}
+
+onMounted(() => {
+  refresh();
+  document.addEventListener("paste", handlePaste);
+});
+onBeforeUnmount(() => document.removeEventListener("paste", handlePaste));
+
 async function reanalyzeOne(job: Job) {
   analyzingIds.value.add(job.id);
   try {
@@ -309,8 +341,6 @@ function startAnalyze() {
   }
   router.push("/run");
 }
-
-onMounted(refresh);
 </script>
 
 <template>
@@ -347,6 +377,7 @@ onMounted(refresh);
         >
           确认导入 ({{ pendingImageFiles.length }} 张)
         </el-button>
+        <span class="hint paste-hint">支持 Ctrl+V 直接粘贴截图</span>
         <span class="hint">表格建议列：company_name / job_title / city / salary / jd_text / job_url / source</span>
       </div>
 
@@ -503,6 +534,10 @@ onMounted(refresh);
 .hint {
   color: #8a94a6;
   font-size: 12px;
+}
+.paste-hint {
+  color: #3a6ff7;
+  font-weight: 500;
 }
 .jd-prev {
   color: #2c3340;

@@ -367,9 +367,12 @@ onMounted(refresh);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="JD 预览" min-width="380">
+        <el-table-column label="JD 预览" min-width="340" cell-class-name="jd-prev-cell">
           <template #default="{ row }">
-            <span class="jd-prev">{{ (row.jd_text || "").slice(0, 100) }}…</span>
+            <div class="jd-prev" :title="row.jd_text">
+              {{ (row.jd_text || "").slice(0, 140) }}
+              <span v-if="(row.jd_text || '').length > 140">…</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
@@ -430,11 +433,22 @@ onMounted(refresh);
   font-size: 12px;
 }
 .jd-prev {
-  color: #8a94a6;
-  font-size: 13px;
-  line-height: 1.5;
-  display: inline-block;
+  color: #5a6477;
+  font-size: 12px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3; /* 最多显示 3 行 */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   word-break: break-all;
+  white-space: normal;
+}
+/* 让 JD 列的 td 上下 padding 大一点，给 3 行文字留位置 */
+.job-table :deep(td.jd-prev-cell),
+.job-table :deep(.jd-prev-cell) {
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
+  vertical-align: top;
 }
 .job-table :deep(tbody tr):hover > td {
   background-color: #f5f8ff !important;

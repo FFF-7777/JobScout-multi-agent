@@ -68,3 +68,37 @@ body {
   margin: 16px 0 8px;
   font-size: 16px;            /* 15 → 16 */
 }
+
+/* === 行内 checkbox 放大到 3 倍（全局，不受 scoped 限制）=== */
+/* Element Plus el-table 的 selection 列在表头 + 表格 body 共用同一个 .el-checkbox */
+.el-table .el-table__cell--selection .el-checkbox,
+.el-table .el-table__header .el-checkbox {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
+.el-table .el-table__cell--selection .el-checkbox__inner,
+.el-table .el-table__header .el-checkbox__inner {
+  width: 24px !important;
+  height: 24px !important;
+  border-width: 2px !important;
+}
+.el-table .el-table__cell--selection .el-checkbox__inner::after,
+.el-table .el-table__header .el-checkbox__inner::after {
+  border-width: 0 3px 3px 0 !important;
+  left: 8px !important;
+  top: 4px !important;
+  height: 12px !important;
+  width: 6px !important;
+}
+.el-table .el-table__cell--selection .el-checkbox__label,
+.el-table .el-table__header .el-checkbox__label {
+  display: none !important;
+}
+.el-table .el-table__cell--selection .cell,
+.el-table .el-table__header .cell {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 10px 0 !important;
+}

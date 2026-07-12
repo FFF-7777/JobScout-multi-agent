@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session
 from config import get_settings
 from database import get_db
 from models import Job, JobAnalysis, MatchResult
-from schemas.job import JobImportTextRequest, JobImportUrlRequest, JobOut
+from schemas.job import (
+    JobImportTextRequest,
+    JobImportUrlRequest,
+    JobOut,
+    ImportImagesResult,
+    ImportImageFailed,
+)
 from services import baidu_ocr, document_parser, job_agent, url_fetcher
 
 # 延迟导入 OCR 服务商模块，运行时根据 settings.ocr_provider 选择
@@ -98,14 +104,14 @@ def import_url(req: JobImportUrlRequest, db: Session = Depends(get_db)):
     return _to_out(job, db)
 
 
-@router.post("/import-images", response_model=list[JobOut])
+@router.post("/import-images", response_model=ImportImagesResult)
 async def import_images(
     files: list[UploadFile] = File(...), db: Session = Depends(get_db)
 ):
     """通过 OCR 识别图片中的 JD 文本并导入岗位（服务商由 OCR_PROVIDER 决定：baidu/tencent）。
 
     支持 PNG / JPEG / JPG / BMP / WebP，单次最多 20 张，每张上限 10MB。
-    返回成功创建的岗位列表（按文件顺序），识别失败的跳过并在响应中提示。
+    返回成功创建的岗位列表 + 逐张失败明细（含文件名与原因）。
     """
     if not files:
         raise HTTPException(400, "未上传任何文件")
@@ -132,16 +138,16 @@ async def import_images(
         raise HTTPException(400, f"OCR 识别失败：{e}") from e
 
     created: list[dict] = []
-    errors: list[str] = []
+    failed: list[ImportImageFailed] = []
 
     for res in ocr_results:
         fname = res.get("filename", "")
         if "error" in res:
-            errors.append(f"{fname}: {res['error']}")
+            failed.append(ImportImageFailed(filename=fname, error=res["error"]))
             continue
         text = (res.get("text") or "").strip()
         if not text:
-            errors.append(f"{fname}: 未识别到文字")
+            failed.append(ImportImageFailed(filename=fname, error="未识别到文字"))
             continue
         job = Job(source="ocr_image", jd_text=text[:30000])
         db.add(job)
@@ -149,11 +155,12 @@ async def import_images(
         db.refresh(job)
         created.append(_to_out(job, db))
 
-    # 如果全部失败，返回 400；部分失败则正常返回成功的列表 + warning header
-    if not created and errors:
-        raise HTTPException(422, f"所有图片识别均失败：{'; '.join(errors[:5])}")
+    # 全部失败：明确报错
+    if not created and failed:
+        detail = "；".join(f"{f.filename}: {f.error}" for f in failed[:5])
+        raise HTTPException(422, f"所有图片识别均失败：{detail}")
 
-    return created
+    return ImportImagesResult(created=created, failed=failed)
 
 
 @router.get("", response_model=list[JobOut])
@@ -255,7 +262,7 @@ class _AnalyzeModeUpdate(BaseModel):
     analyze_mode: str
 
 
-_FULL_MODE_LIMIT = 10  # 全文模式一次最多 10 个岗位
+_FULL_MODE_LIMIT = 10  # 兼容旧引用；真实上限由 config.full_mode_limit 控制（启动任务时校验）
 
 
 @router.put("/{job_id}/analyze-mode", response_model=JobOut)
@@ -277,9 +284,9 @@ def set_analyze_mode(
 
 @router.get("/full-mode/count")
 def count_full_mode(db: Session = Depends(get_db)):
-    """全文模式岗位数（含上限），用于前端校验。"""
+    """深度分析岗位数（含上限），用于前端校验。"""
     n = db.query(Job).filter(Job.analyze_mode == "full").count()
-    return {"count": n, "limit": _FULL_MODE_LIMIT}
+    return {"count": n, "limit": get_settings().full_mode_limit}
 
 
 class _BatchAnalyzeItem(BaseModel):

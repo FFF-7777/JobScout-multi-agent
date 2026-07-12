@@ -60,6 +60,17 @@ def _level_of(score: float) -> str:
     return "D"
 
 
+def _clamp_score(v: object) -> float:
+    """把任意模型输出安全地截断到 [0, 100]，避免异常分导致 Pydantic 校验失败。"""
+    try:
+        x = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if x != x:  # NaN 检查
+        return 0.0
+    return max(0.0, min(100.0, x))
+
+
 def _recommendation_of(level: str) -> str:
     return {
         "S": "强烈建议投递",
@@ -97,24 +108,26 @@ def run(
     )
 
     llm_dims = llm_out.get("dimensions", {}) or {}
-    llm_tech = float(llm_dims.get("tech_stack", 0) or 0)
+    llm_tech = _clamp_score(llm_dims.get("tech_stack", 0))
     rule_tech = rule_tech_coverage(resume, job)
 
     dims = DimensionScores(
-        tech_stack=round(0.6 * rule_tech + 0.4 * llm_tech, 1),
-        project_exp=float(llm_dims.get("project_exp", 0) or 0),
-        role_direction=float(llm_dims.get("role_direction", 0) or 0),
-        qualification=float(llm_dims.get("qualification", 0) or 0),
-        logistics=float(llm_dims.get("logistics", 0) or 0),
+        tech_stack=_clamp_score(round(0.6 * rule_tech + 0.4 * llm_tech, 1)),
+        project_exp=_clamp_score(llm_dims.get("project_exp", 0)),
+        role_direction=_clamp_score(llm_dims.get("role_direction", 0)),
+        qualification=_clamp_score(llm_dims.get("qualification", 0)),
+        logistics=_clamp_score(llm_dims.get("logistics", 0)),
     )
 
-    score = round(
-        dims.tech_stack * WEIGHTS["tech_stack"]
-        + dims.project_exp * WEIGHTS["project_exp"]
-        + dims.role_direction * WEIGHTS["role_direction"]
-        + dims.qualification * WEIGHTS["qualification"]
-        + dims.logistics * WEIGHTS["logistics"],
-        1,
+    score = _clamp_score(
+        round(
+            dims.tech_stack * WEIGHTS["tech_stack"]
+            + dims.project_exp * WEIGHTS["project_exp"]
+            + dims.role_direction * WEIGHTS["role_direction"]
+            + dims.qualification * WEIGHTS["qualification"]
+            + dims.logistics * WEIGHTS["logistics"],
+            1,
+        )
     )
     level = _level_of(score)
 

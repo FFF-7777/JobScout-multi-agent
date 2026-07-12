@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database import get_db
+from config import get_settings
 from models import AgentRun, Job, Resume
 from schemas.report import AgentRunOut, WorkflowRunRequest, WorkflowTaskOut
 from services import workflow
@@ -26,6 +27,20 @@ def run_agents(
     job_ids = req.job_ids or [j.id for j in db.query(Job).all()]
     if not job_ids:
         raise HTTPException(400, "没有可分析的岗位")
+
+    # 启动限制：本次任务选中的「深度分析」岗位不得超过上限。
+    # 仅约束本次任务集合，不限制数据库里 full 岗位总数（避免历史 full 影响后续任务）。
+    limit = get_settings().full_mode_limit
+    full_count = (
+        db.query(Job)
+        .filter(Job.id.in_(job_ids), Job.analyze_mode == "full")
+        .count()
+    )
+    if full_count > limit:
+        raise HTTPException(
+            400,
+            f"深度分析（full）岗位本次最多 {limit} 个，当前选中 {full_count} 个，请减少后再试",
+        )
 
     task_id = workflow.create_task(req.resume_id, job_ids)
     background.add_task(workflow.run_workflow, task_id, req.resume_id, job_ids)

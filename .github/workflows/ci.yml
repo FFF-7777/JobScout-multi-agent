@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install backend deps
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+      - name: Prepare .env from template
+        run: cp .env.example .env
+      - name: Start server & smoke test (import-text 不依赖 LLM Key)
+        run: |
+          .venv/bin/uvicorn main:app --port 8020 &
+          SERVER_PID=$!
+          sleep 10
+          curl -s -X POST http://127.0.0.1:8020/api/jobs/import-text \
+            -H "Content-Type: application/json" \
+            -d '{"jd_text":"CI 冒烟测试 JD","split_batch":false}' \
+            | grep -q '"id"' && echo "import-text OK" || (echo "import-text FAILED"; kill $SERVER_PID; exit 1)
+          kill $SERVER_PID
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install & build
+        run: |
+          npm install
+          npm run build

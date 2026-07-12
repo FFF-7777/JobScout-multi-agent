@@ -9,17 +9,17 @@ from pydantic import BaseModel, Field
 class DimensionScores(BaseModel):
     """五维度得分（0-100），由 LLM + 规则给出。"""
 
-    tech_stack: float = 0.0  # 技术栈匹配 30%
-    project_exp: float = 0.0  # 项目经验匹配 30%
-    role_direction: float = 0.0  # 岗位方向匹配 20%
-    qualification: float = 0.0  # 学历/年级/求职条件 10%
-    logistics: float = 0.0  # 城市/薪资/可投递性 10%
+    tech_stack: float = Field(0.0, ge=0, le=100)  # 技术栈匹配 30%
+    project_exp: float = Field(0.0, ge=0, le=100)  # 项目经验匹配 30%
+    role_direction: float = Field(0.0, ge=0, le=100)  # 岗位方向匹配 20%
+    qualification: float = Field(0.0, ge=0, le=100)  # 学历/年级/求职条件 10%
+    logistics: float = Field(0.0, ge=0, le=100)  # 城市/薪资/可投递性 10%
 
 
 class MatchResultModel(BaseModel):
     """Match Agent 的结构化输出。"""
 
-    score: float = 0.0
+    score: float = Field(0.0, ge=0, le=100)
     level: str = "D"  # S/A/B/C/D
     dimensions: DimensionScores = Field(default_factory=DimensionScores)
     matched_points: list[str] = Field(default_factory=list)

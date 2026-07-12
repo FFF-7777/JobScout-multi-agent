@@ -146,7 +146,12 @@ export const api = {
   importJobImages: (files: File[]) => {
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
-    return http.post<Job[]>("/api/jobs/import-images", fd).then((r) => r.data);
+    return http
+      .post<{ created: Job[]; failed: { filename: string; error: string }[] }>(
+        "/api/jobs/import-images",
+        fd
+      )
+      .then((r) => r.data);
   },
   listJobs: () => http.get<Job[]>("/api/jobs").then((r) => r.data),
   getJob: (id: number) => http.get<Job>(`/api/jobs/${id}`).then((r) => r.data),

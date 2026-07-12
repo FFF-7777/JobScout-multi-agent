@@ -52,3 +52,15 @@ class JobOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ImportImageFailed(BaseModel):
+    """单张图片识别失败的原因。"""
+    filename: str
+    error: str
+
+
+class ImportImagesResult(BaseModel):
+    """图片批量导入结果：成功创建的岗位 + 失败明细。"""
+    created: list[JobOut] = Field(default_factory=list)
+    failed: list[ImportImageFailed] = Field(default_factory=list)

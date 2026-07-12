@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # 设太高容易触发 DashScope 限流；默认 3，留 env 调节
     llm_concurrency: int = 3
 
+    # 单次任务中「深度分析（full，额外结合简历原文）」岗位数上限
+    # 仅在工作流启动时校验选中集合，不限制数据库里 full 总数
+    full_mode_limit: int = 10
+
     # 百度 OCR（图片导入 JD 文字识别）
     baidu_ocr_app_id: str = ""
     baidu_ocr_api_key: str = ""

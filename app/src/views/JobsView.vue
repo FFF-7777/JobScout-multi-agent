@@ -44,7 +44,7 @@ async function setModeForSelected(mode: "summary" | "full") {
       ).length;
     if (fullModeCount.value + willFull > FULL_MODE_LIMIT) {
       ElMessage.warning(
-        `全文模式一次最多 ${FULL_MODE_LIMIT} 个岗位（当前已有 ${fullModeCount.value} 个），先把别的切回精简再试`
+        `深度分析一次最多 ${FULL_MODE_LIMIT} 个岗位（当前已有 ${fullModeCount.value} 个），先把别的切回快速分析再试`
       );
       return;
     }
@@ -57,8 +57,8 @@ async function setModeForSelected(mode: "summary" | "full") {
     }
     ElMessage.success(
       mode === "full"
-        ? `已将 ${ids.length} 个岗位切换为全文模式`
-        : `已将 ${ids.length} 个岗位切换为精简模式`
+        ? `已将 ${ids.length} 个岗位切换为深度分析（额外结合简历原文）`
+        : `已将 ${ids.length} 个岗位切换为快速分析`
     );
     await refresh();
   } catch (e: any) {
@@ -131,10 +131,16 @@ async function importImages(uploadedFiles: File[]) {
   loading.value = true;
   try {
     const r = await api.importJobImages(uploadedFiles);
-    if (r.length === uploadedFiles.length) {
-      ElMessage.success(`成功识别导入 ${r.length} 个岗位`);
+    const ok = r.created.length;
+    const fail = r.failed.length;
+    if (fail === 0) {
+      ElMessage.success(`成功识别导入 ${ok} 个岗位`);
     } else {
-      ElMessage.warning(`成功 ${r.length}/${uploadedFiles.length} 个（部分图片识别失败）`);
+      const detail = r.failed
+        .slice(0, 5)
+        .map((f) => `${f.filename}: ${f.error}`)
+        .join("；");
+      ElMessage.warning(`成功 ${ok} 个，失败 ${fail} 个（${detail}${fail > 5 ? "…" : ""}）`);
     }
     await refresh();
   } catch (e: any) {
@@ -400,8 +406,8 @@ function startAnalyze() {
             style="width: 110px"
             @change="(v: 'summary' | 'full') => { bulkMode = v; setModeForSelected(v); }"
           >
-            <el-option label="精简模式" value="summary" />
-            <el-option label="全文模式" value="full" />
+            <el-option label="快速分析" value="summary" />
+            <el-option label="深度分析" value="full" />
           </el-select>
           <el-button :disabled="!hasSelected" :loading="loading" @click="reanalyzeSelected">
             批量重新解析
@@ -423,7 +429,7 @@ function startAnalyze() {
           </el-button>
         </div>
         <div v-if="fullModeCount > 0" class="mode-hint">
-          全文模式：{{ fullModeCount }} / {{ FULL_MODE_LIMIT }}（更精准，单次 LLM 耗时翻倍）
+          深度分析：{{ fullModeCount }} / {{ FULL_MODE_LIMIT }}（额外结合简历原文，更精准，单次 LLM 耗时翻倍）
         </div>
       </div>
       <el-table
@@ -455,7 +461,7 @@ function startAnalyze() {
               effect="plain"
               style="padding: 0 4px"
             >
-              {{ (row.analyze_mode || "summary") === "full" ? "全文" : "精" }}
+              {{ (row.analyze_mode || "summary") === "full" ? "深度" : "快速" }}
             </el-tag>
           </template>
         </el-table-column>

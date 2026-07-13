@@ -25,3 +25,6 @@ dist/
 
 # Local tools / agent memory (not for public repo)
 .workbuddy/
+
+# Runtime output (logs, playwright artifacts)
+output/

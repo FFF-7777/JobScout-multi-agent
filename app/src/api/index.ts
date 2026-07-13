@@ -100,11 +100,64 @@ export interface AgentRuntimeMeta {
   match_agent_concurrency: number;
   report_agent_concurrency: number;
   match_two_tier: boolean;
+  deep_research_enabled: boolean;
+  deep_research_strategy: string;
   assumptions: {
     quick_seconds_per_job: number;
     deep_seconds_per_job: number;
     report_overhead_seconds: number;
   };
+}
+export interface SkillEvidenceItem {
+  skill: string;
+  source: string;
+  bucket: "confirmed" | "partial" | "transferable" | "not_shown" | string;
+  job_requirement: string;
+  resume_evidence: string;
+  note: string;
+}
+export interface SkillEvidenceSummary {
+  required_total: number;
+  preferred_total: number;
+  confirmed_count: number;
+  partial_count: number;
+  transferable_count: number;
+  not_shown_count: number;
+}
+export interface StrengthItem {
+  title: string;
+  resume_evidence: string;
+  job_relevance: string;
+}
+export interface GapItem {
+  title: string;
+  severity: "fatal" | "major" | "minor" | string;
+  impact: string;
+  short_term_fixable: boolean;
+  action: string;
+}
+export interface MatchDecision {
+  action: string;
+  summary: string;
+  reasons?: string[];
+  exception?: string;
+}
+export interface MatchDetail {
+  score?: number;
+  level?: string;
+  dimensions?: Record<string, number>;
+  top_strengths?: StrengthItem[];
+  main_gaps?: GapItem[];
+  hr_screening?: { likely_result?: string; main_reason?: string };
+  career_alignment?: { score?: number; analysis?: string };
+  application_decision?: MatchDecision;
+  next_actions?: string[];
+  confidence?: number;
+  hard_condition_result?: any;
+  skill_evidence?: SkillEvidenceItem[];
+  skill_evidence_summary?: SkillEvidenceSummary;
+  research_summary?: string[];
+  report?: any;
 }
 export interface MatchResult {
   id: number;
@@ -117,7 +170,7 @@ export interface MatchResult {
   matched_points: string[];
   missing_points: string[];
   risk_notes: string[];
-  detail_json: any;
+  detail_json: MatchDetail | null;
   cache_hit: boolean;
   report: any;
   company_name: string;

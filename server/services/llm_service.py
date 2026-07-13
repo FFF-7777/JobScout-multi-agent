@@ -114,7 +114,14 @@ def _with_retry(fn):
 
 
 def chat_text(
-    system: str, user: str, temperature: float | None = None, model_role: str = "fast"
+    system: str,
+    user: str,
+    temperature: float | None = None,
+    model_role: str = "fast",
+    *,
+    enable_search: bool = False,
+    forced_search: bool = False,
+    search_strategy: str = "auto",
 ) -> str:
     settings = get_settings()
     client = _get_client(model_role)
@@ -137,8 +144,15 @@ def chat_text(
                 {"role": "user", "content": user},
             ],
         }
+        extra_body: dict[str, Any] = {}
         if enable_thinking and role == model_role:
-            kwargs["extra_body"] = {"enable_thinking": True}
+            extra_body["enable_thinking"] = True
+        if enable_search:
+            extra_body["enable_search"] = True
+            extra_body["forced_search"] = forced_search
+            extra_body["search_strategy"] = search_strategy
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         resp = _get_client(role).chat.completions.create(**kwargs)
         return (resp.choices[0].message.content or "").strip()
 
@@ -155,6 +169,10 @@ def chat_json(
     user: str,
     temperature: float | None = None,
     model_role: str = "fast",
+    *,
+    enable_search: bool = False,
+    forced_search: bool = False,
+    search_strategy: str = "auto",
 ) -> dict[str, Any]:
     settings = get_settings()
     client = _get_client(model_role)
@@ -181,8 +199,15 @@ def chat_json(
                     {"role": "user", "content": user + extra_hint},
                 ],
             }
+            extra_body: dict[str, Any] = {}
             if enable_thinking and role == model_role:
-                kwargs["extra_body"] = {"enable_thinking": True}
+                extra_body["enable_thinking"] = True
+            if enable_search:
+                extra_body["enable_search"] = True
+                extra_body["forced_search"] = forced_search
+                extra_body["search_strategy"] = search_strategy
+            if extra_body:
+                kwargs["extra_body"] = extra_body
             elif _use_response_format:
                 kwargs["response_format"] = {"type": "json_object"}
             try:

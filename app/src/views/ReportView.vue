@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { useRouter } from "vue-router";
 import { marked } from "marked";
 import { api, type ReportItem, type ReportTaskItem } from "@/api";
 
+const router = useRouter();
 const reports = ref<ReportItem[]>([]);
 const activeTasks = ref<ReportTaskItem[]>([]);
 const current = ref<ReportItem | null>(null);
@@ -12,6 +14,18 @@ let autoReload: number | null = null;
 
 const totalCards = computed(() => reports.value.length + activeTasks.value.length);
 const initialLoading = computed(() => loading.value && totalCards.value === 0);
+const reportTaskBanner = computed(() => {
+  if (!activeTasks.value.length) return null;
+  const deepCount = activeTasks.value.filter((task) => task.mode === "deep").length;
+  const standardCount = activeTasks.value.filter((task) => task.mode !== "deep").length;
+  const parts: string[] = [];
+  if (deepCount) parts.push(`${deepCount} 个深度报告`);
+  if (standardCount) parts.push(`${standardCount} 个基础报告`);
+  return {
+    title: "后台仍有报告任务在生成",
+    description: `${parts.join("，")} 正在持续写入历史报告；完成后会自动出现在左侧列表。`,
+  };
+});
 
 function renderMd(text: string): string {
   return marked.parse(text || "", { breaks: true }) as string;
@@ -48,6 +62,10 @@ function reportType(r: ReportItem): "deep" | "standard" {
 
 function reportTypeLabel(r: ReportItem): string {
   return reportType(r) === "deep" ? "深度分析" : "基础分析";
+}
+
+function reportHasResearch(r: ReportItem): boolean {
+  return (r.markdown_content || "").includes("深度研究补充");
 }
 
 function taskTypeLabel(task: ReportTaskItem): string {
@@ -93,7 +111,7 @@ async function deleteReport(r: ReportItem, e: Event) {
   e.stopPropagation();
   try {
     await ElMessageBox.confirm(
-      `确定删除报告“${r.title}”吗？此操作不可恢复。`,
+      `确定删除报告「${r.title}」吗？此操作不可恢复。`,
       "删除报告",
       { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
     );
@@ -132,13 +150,21 @@ onUnmounted(() => {
       基础分析与深度分析分别保存。正在生成中的报告也会先显示占位卡，方便你确认任务状态。
     </div>
 
+    <div v-if="reportTaskBanner" class="report-banner">
+      <div class="report-banner-main">
+        <div class="report-banner-title">{{ reportTaskBanner.title }}</div>
+        <div class="report-banner-desc">{{ reportTaskBanner.description }}</div>
+      </div>
+      <el-button size="small" @click="router.push('/results')">返回结果页</el-button>
+    </div>
+
     <div class="report-shell">
       <aside class="card list soft-scroll">
         <div class="list-head">
           <div>
             <div class="eyebrow">History</div>
             <div class="section-h list-title">历史报告</div>
-            <div class="list-count">{{ totalCards }} 个卡片 · {{ reports.length }} 份已完成报告</div>
+            <div class="list-count">{{ totalCards }} 张卡片 · {{ reports.length }} 份已完成报告</div>
           </div>
         </div>
 
@@ -189,6 +215,7 @@ onUnmounted(() => {
         >
           <div class="ri-meta">
             <span :class="['report-type', reportType(r)]">{{ reportTypeLabel(r) }}</span>
+            <span v-if="reportHasResearch(r)" class="report-research-badge">含研究补充</span>
             <span>{{ formatDate(r.created_at) }}</span>
           </div>
           <div class="ri-title">{{ r.title }}</div>
@@ -241,6 +268,35 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.report-banner {
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(58, 111, 247, 0.18);
+  background: rgba(58, 111, 247, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.report-banner-main {
+  min-width: 0;
+}
+
+.report-banner-title {
+  color: #18263f;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.report-banner-desc {
+  margin-top: 4px;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .report-shell {
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
@@ -479,6 +535,17 @@ onUnmounted(() => {
 
 .task-status {
   color: #5f7ee3;
+  font-weight: 700;
+}
+
+.report-research-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(238, 244, 255, 0.96);
+  color: #356ae6;
+  font-size: 11px;
   font-weight: 700;
 }
 

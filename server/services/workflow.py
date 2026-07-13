@@ -338,7 +338,8 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
     settings = get_settings()
     done = 0
 
-    # 涓荤嚎绋嬮鍔犺浇 DB 鏁版嵁锛寃orker 绾跨▼鍙仛 LLM锛堜笉纰?Session锛?    work_items = _preload_job_work_items(job_ids)
+    # 主线程预加载 DB 数据，worker 线程只做 LLM，不碰 Session。
+    work_items = _preload_job_work_items(job_ids)
 
     def _on_result(wi, profile, err):
         nonlocal done
@@ -392,7 +393,11 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
                     existing.risk_tags = profile.risk_tags
                     existing.analysis_json = profile.model_dump()
                 db.commit()
-            parsed.append({"job_id": jid, "profile": profile.model_dump()})
+            parsed.append({
+                "job_id": jid,
+                "profile": profile.model_dump(),
+                "analyze_mode": job.analyze_mode or "summary",
+            })
         except Exception as e:  # noqa: BLE001
             state.setdefault("errors", []).append(f"parse_jobs commit job {jid}: {e}")
             db.rollback()
@@ -466,10 +471,11 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     settings = get_settings()
     resume_id = state["resume_id"]
     two_tier = bool(settings.match_two_tier)
-    quick_seconds = 20
-    deep_seconds = 90
+    quick_seconds = 40
+    deep_seconds = 70
 
-    # 骞跺彂鍙鍖?/ 璁℃椂鎵€闇€鐨勭嚎绋嬪畨鍏ㄥ鍣?    lock = threading.Lock()
+    # 并发可视化 / 计时需要的线程安全容器。
+    lock = threading.Lock()
     start_times: dict[int, float] = {}
     in_flight: set[int] = set()
     cached_jids: set[int] = set()
@@ -480,13 +486,21 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     title_map = {it["job_id"]: (it["profile"] or {}).get("job_title", "") for it in jobs}
     # jid -> (MatchResultModel, result_row_id)锛氭渶缁堬紙鍙兘缁?deep 瑕嗙洊锛夌殑鍖归厤缁撴灉
     final_map: dict[int, dict] = {}
-    job_mode_map: dict[int, str] = {}
-    db_modes = SessionLocal()
-    try:
-        for row in db_modes.query(Job).filter(Job.id.in_([it["job_id"] for it in jobs])).all():
-            job_mode_map[row.id] = row.analyze_mode or "summary"
-    finally:
-        db_modes.close()
+    job_mode_map: dict[int, str] = {
+        it["job_id"]: it["analyze_mode"] or "summary"
+        for it in jobs
+        if "analyze_mode" in it
+    }
+    missing_mode_ids = [it["job_id"] for it in jobs if it["job_id"] not in job_mode_map]
+    if missing_mode_ids:
+        db_modes = SessionLocal()
+        try:
+            for row in db_modes.query(Job).filter(Job.id.in_(missing_mode_ids)).all():
+                job_mode_map[row.id] = row.analyze_mode or "summary"
+        except Exception:
+            pass
+        finally:
+            db_modes.close()
 
     if two_tier:
         quick_targets = [it for it in jobs if job_mode_map.get(it["job_id"], "summary") != "full"]
@@ -600,7 +614,9 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
                     phase_done[tier] += 1
                 _emit_progress(tier, phase_total, label + " 鈥?澶辫触")
                 return
-            # P1#8锛氱洿鎺ョ敤 persist_match_row 鐨勮繑鍥炲€硷紙琛?id锛夛紝涓嶅啀寮€涓存椂 Session 鏌ヨ锛?            # 閬垮厤鎵归噺杩愯鏃剁疮绉湭鍏抽棴鐨勬暟鎹簱杩炴帴銆?            result_id = None
+            # 直接使用 persist_match_row 的返回值（行 id），不再临时开 Session 查询。
+            # 这样能避免批量运行时累计未关闭的数据库连接。
+            result_id = None
             try:
                 result_id = match_core.persist_match_row(
                     task_id, resume_id, jid, oc.match, oc.key, oc.cache_hit,

@@ -1,11 +1,13 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { api, type MatchResult } from "@/api";
+import { useRouter } from "vue-router";
+import { api, type MatchResult, type ReportTaskItem } from "@/api";
 import { useAppStore } from "@/stores/app";
 import JobDetailView from "@/views/JobDetailView.vue";
 
 const store = useAppStore();
+const router = useRouter();
 
 const results = ref<MatchResult[]>([]);
 const loading = ref(false);
@@ -42,6 +44,47 @@ const matchRunning = computed(
   () => taskStatus.value === "running" || taskStatus.value === ""
 );
 
+const taskStatusMeta = computed(() => {
+  if (!store.taskId) return null;
+  if (taskStatus.value === "running" || taskStatus.value === "") {
+    return {
+      type: "primary" as const,
+      title: `分析进行中，结果持续生成（已完成 ${results.value.length} 个）`,
+      description: "下方列表会自动刷新；如果想看更细的执行进度、剩余时间和失败明细，可以回到执行流程页。",
+      actionLabel: "查看执行流程",
+      action: () => router.push("/run"),
+    };
+  }
+  if (taskStatus.value === "completed") {
+    return {
+      type: "success" as const,
+      title: `分析已完成，共生成 ${results.value.length} 个结果`,
+      description: "现在可以直接筛选岗位、查看详情，或在本页继续生成基础 / 深度报告。",
+      actionLabel: "前往报告导出",
+      action: () => router.push("/reports"),
+    };
+  }
+  if (taskStatus.value === "completed_with_errors") {
+    return {
+      type: "warning" as const,
+      title: `分析已完成，但有部分岗位异常（当前结果 ${results.value.length} 个）`,
+      description: "建议先查看失败项并按需重试，再决定是否批量生成报告。",
+      actionLabel: "查看执行流程",
+      action: () => router.push("/run"),
+    };
+  }
+  if (taskStatus.value === "failed") {
+    return {
+      type: "error" as const,
+      title: "本次分析已中断或失败",
+      description: "已产出的结果仍然保留。你可以回到执行流程页查看原因，或重新发起分析。",
+      actionLabel: "返回执行流程",
+      action: () => router.push("/run"),
+    };
+  }
+  return null;
+});
+
 // ── 决策卡辅助函数 ──
 function dj(row: MatchResult): any {
   return row.detail_json ?? {};
@@ -72,6 +115,12 @@ function careerAlignment(row: MatchResult): any {
 }
 function nextActions(row: MatchResult): any[] {
   return dj(row)?.next_actions ?? [];
+}
+function researchSummary(row: MatchResult): string[] {
+  return dj(row)?.research_summary ?? [];
+}
+function skillEvidenceSummary(row: MatchResult): any {
+  return dj(row)?.skill_evidence_summary ?? null;
 }
 function hrLabel(result?: string): string {
   return { competitive: "有竞争力", borderline: "存在风险", unlikely: "初筛概率低" }[result || ""] || result || "—";
@@ -218,6 +267,7 @@ const initialLoading = computed(() => loading.value && results.value.length === 
 
 // 深度报告后台任务轮询定时器
 let deepPollTimer: number | undefined;
+let deepPollSeq = 0;
 const deepTask = ref<{
   taskId: string;
   status: string;
@@ -227,6 +277,11 @@ const deepTask = ref<{
   startedAt: number;
   elapsed: number;
 } | null>(null);
+
+const deepTaskRunning = computed(() => {
+  const status = deepTask.value?.status;
+  return status === "queued" || status === "running";
+});
 
 const deepProgress = computed(() => {
   const task = deepTask.value;
@@ -243,6 +298,16 @@ const deepEta = computed(() => {
   return Math.max(1, Math.round(perItem * remaining));
 });
 
+const deepTaskTitle = computed(() => {
+  const status = deepTask.value?.status;
+  if (status === "done") return "分析已完成";
+  if (status === "partial") return "部分完成";
+  if (status === "failed") return "生成失败";
+  if (status === "timeout") return "后台仍可能在处理";
+  if (status === "queued") return "已排队，等待报告智能体处理";
+  return "正在逐项分析岗位";
+});
+
 function fmtTime(seconds: number): string {
   const value = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(value / 60);
@@ -254,6 +319,7 @@ function stopDeepPoll() {
     clearInterval(deepPollTimer);
     deepPollTimer = undefined;
   }
+  deepPollSeq += 1;
 }
 
 function _deepTimeout(total: number): number {
@@ -263,30 +329,54 @@ function _deepTimeout(total: number): number {
   return Math.max(2 * 60 * 1000, Math.min(15 * 60 * 1000, estimated));
 }
 
-async function pollDeepTask(taskId: string, total: number) {
-  const start = Date.now();
+function taskStartedAt(createdAt?: string | null) {
+  if (!createdAt) return Date.now();
+  const parsed = new Date(createdAt).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function setDeepTaskFromTask(
+  task: { task_id: string; status: string; total: number; done: number; failed: number; created_at?: string | null },
+  startedAt: number
+) {
+  deepTask.value = {
+    taskId: task.task_id,
+    status: task.status,
+    total: task.total,
+    done: task.done,
+    failed: task.failed,
+    startedAt,
+    elapsed: Math.max(0, (Date.now() - startedAt) / 1000),
+  };
+}
+
+async function pollDeepTask(
+  taskId: string,
+  total: number,
+  createdAt?: string | null,
+  silent = false
+) {
+  const seq = ++deepPollSeq;
+  const start = taskStartedAt(createdAt);
+  const pollStart = Date.now();
   const timeout = _deepTimeout(total);
   deepTask.value = { taskId, status: "queued", total, done: 0, failed: 0, startedAt: start, elapsed: 0 };
-  while (Date.now() - start < timeout) {
+  while (deepPollSeq === seq && Date.now() - pollStart < timeout) {
     await new Promise((r) => setTimeout(r, 1500));
+    if (deepPollSeq !== seq) return;
     try {
       const t = await api.getReportTask(taskId);
-      deepTask.value = {
-        taskId,
-        status: t.status,
-        total: t.total,
-        done: t.done,
-        failed: t.failed,
-        startedAt: start,
-        elapsed: (Date.now() - start) / 1000,
-      };
+      setDeepTaskFromTask(t, start);
       if (t.status === "done" || t.status === "partial") {
         const ok = t.done;
         const fail = t.failed;
-        ElMessage.success(
-          `深度报告生成完成：${ok}/${total} 成功` + (fail ? `（${fail} 失败）` : "")
-        );
-        stopDeepPoll();
+        if (!silent) {
+          ElMessage.success(
+            `深度报告生成完成：${ok}/${total} 成功` + (fail ? `（${fail} 失败）` : "")
+          );
+        }
+        if (deepPollSeq === seq) deepPollSeq += 1;
+        store.setReportTask(null);
         await loadResults();
         return;
       }
@@ -294,10 +384,40 @@ async function pollDeepTask(taskId: string, total: number) {
       // 轮询失败不打断
     }
   }
-  stopDeepPoll();
+  if (deepPollSeq !== seq) return;
+  deepPollSeq += 1;
   const mins = Math.round(timeout / 60000);
   if (deepTask.value) deepTask.value.status = "timeout";
   ElMessage.warning(`深度报告生成超时（>${mins}min），请稍后刷新查看`);
+}
+
+async function restoreActiveDeepReportTask() {
+  if (deepTaskRunning.value) return;
+  try {
+    const active = await api.listActiveReportTasks();
+    const task = active.find((item: ReportTaskItem) => item.mode === "deep");
+    if (task) {
+      store.setReportTask({ taskId: task.task_id, mode: "deep", total: task.total });
+      setDeepTaskFromTask(task, taskStartedAt(task.created_at));
+      void pollDeepTask(task.task_id, task.total, task.created_at, true);
+      return;
+    }
+
+    if (store.reportTask?.mode === "deep") {
+      const saved = store.reportTask;
+      const current = await api.getReportTask(saved.taskId);
+      if (current.status === "queued" || current.status === "running") {
+        setDeepTaskFromTask(current, taskStartedAt(current.created_at));
+        void pollDeepTask(saved.taskId, saved.total || current.total, current.created_at, true);
+      } else {
+        setDeepTaskFromTask(current, taskStartedAt(current.created_at));
+        store.setReportTask(null);
+        await loadResults();
+      }
+    }
+  } catch {
+    /* 恢复失败不打断结果页 */
+  }
 }
 
 async function genReports(mode: "standard" | "deep") {
@@ -314,7 +434,8 @@ async function genReports(mode: "standard" | "deep") {
     if (mode === "deep" && "task_id" in res) {
       ElMessage.info(`深度报告已排队：${res.total_items} 个岗位，后台生成中…`);
       stopDeepPoll();
-      await pollDeepTask(res.task_id, res.total_items);
+      store.setReportTask({ taskId: res.task_id, mode: "deep", total: res.total_items });
+      void pollDeepTask(res.task_id, res.total_items);
     } else {
       const r = res as { generated: number; errors: any[] };
       ElMessage.success(
@@ -344,10 +465,22 @@ function exportExcel() {
     .catch(() => ElMessage.error("导出失败"));
 }
 
-onMounted(startPolling);
+function handleVisibilityChange() {
+  if (document.visibilityState === "visible") {
+    void restoreActiveDeepReportTask();
+    void loadResults();
+  }
+}
+
+onMounted(() => {
+  void startPolling();
+  void restoreActiveDeepReportTask();
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+});
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
   stopDeepPoll();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 
 // 筛选条件变化时重置到第一页
@@ -362,23 +495,21 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
     <div class="page-title">岗位推荐结果</div>
     <div class="page-sub">按匹配度排序，支持城市 / 等级 / 投递决策 / 技术栈筛选，点击行展开决策摘要或查看详情。</div>
 
-    <el-alert
-      v-if="matchRunning && results.length > 0"
-      type="primary"
-      :closable="false"
-      show-icon
-      style="margin-bottom: 12px"
-      :title="`匹配进行中，结果持续生成（已完成 ${results.length} 个）`"
-      description="下方列表会随 Match Agent 完成自动刷新；报告可在本页按需生成，无需等待全部岗位结束。"
-    />
+    <div v-if="taskStatusMeta" class="task-status-banner" :class="`is-${taskStatusMeta.type}`">
+      <div class="task-status-main">
+        <div class="task-status-title">{{ taskStatusMeta.title }}</div>
+        <div class="task-status-desc">{{ taskStatusMeta.description }}</div>
+      </div>
+      <el-button size="small" :type="taskStatusMeta.type === 'primary' ? 'primary' : 'default'" @click="taskStatusMeta.action()">
+        {{ taskStatusMeta.actionLabel }}
+      </el-button>
+    </div>
 
     <section v-if="deepTask" class="report-progress" aria-live="polite">
       <div class="report-progress-head">
         <div>
           <div class="report-progress-kicker">深度报告生成</div>
-          <div class="report-progress-title">
-            {{ deepTask.status === 'done' ? '分析已完成' : deepTask.status === 'partial' ? '部分完成' : '正在逐项分析岗位' }}
-          </div>
+          <div class="report-progress-title">{{ deepTaskTitle }}</div>
         </div>
         <div class="report-progress-percent">{{ deepProgress }}%</div>
       </div>
@@ -386,7 +517,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
         :percentage="deepProgress"
         :stroke-width="8"
         :show-text="false"
-        :status="deepTask.status === 'partial' ? 'warning' : deepTask.status === 'done' ? 'success' : undefined"
+        :status="deepTask.status === 'partial' || deepTask.status === 'timeout' ? 'warning' : deepTask.status === 'done' ? 'success' : deepTask.status === 'failed' ? 'exception' : undefined"
       />
       <div class="report-progress-stats">
         <span><b>{{ deepTask.done }}</b> / {{ deepTask.total }} 已完成</span>
@@ -426,11 +557,11 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
       </el-button>
       <el-button
         type="primary"
-        :loading="generating"
-        :disabled="results.length === 0"
+        :loading="generating || deepTaskRunning"
+        :disabled="results.length === 0 || deepTaskRunning"
         @click="genReports('deep')"
       >
-        生成深度报告{{ selectedIds.length ? "（选中）" : "（全部）" }}
+        {{ deepTaskRunning ? "深度报告生成中" : `生成深度报告${selectedIds.length ? "（选中）" : "（全部）"}` }}
       </el-button>
       <el-button
         v-if="failedCount > 0"
@@ -503,6 +634,15 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
                   <span v-if="careerAlignment(row)?.analysis" class="expand-muted">· {{ careerAlignment(row).analysis }}</span>
                 </span>
               </div>
+              <div v-if="skillEvidenceSummary(row)" class="expand-row">
+                <span class="expand-label">技能证据</span>
+                <span class="expand-text">
+                  直接命中 {{ skillEvidenceSummary(row)?.confirmed_count ?? 0 }}
+                  · 部分命中 {{ skillEvidenceSummary(row)?.partial_count ?? 0 }}
+                  · 可迁移 {{ skillEvidenceSummary(row)?.transferable_count ?? 0 }}
+                  · 未体现 {{ skillEvidenceSummary(row)?.not_shown_count ?? 0 }}
+                </span>
+              </div>
               <!-- 核心优势 -->
               <div v-if="topStrengths(row).length" class="expand-section">
                 <span class="expand-label" style="color: #28784a">核心优势</span>
@@ -529,6 +669,13 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
                 <span class="expand-label" style="color: #2857c5">投递前行动</span>
                 <div v-for="(a, i) in nextActions(row)" :key="i" class="expand-item">
                   <span style="color: #3a6ff7; font-weight: 700">{{ i + 1 }}.</span> {{ a }}
+                </div>
+              </div>
+              <div v-if="researchSummary(row).length" class="expand-section">
+                <span class="expand-label" style="color: #245bdb">深度研究补充</span>
+                <div class="expand-muted" style="margin: 6px 0 10px">仅深度分析会补充这部分外部语境，不参与快速分析。</div>
+                <div v-for="(item, i) in researchSummary(row)" :key="`research-${i}-${item}`" class="expand-item">
+                  <span style="color: #3a6ff7; font-weight: 700">{{ i + 1 }}.</span> {{ item }}
                 </div>
               </div>
               <!-- 旧字段兜底：匹配点/缺口 -->
@@ -606,7 +753,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
                 type="warning"
                 size="small"
                 :loading="retrying"
-                @click.stop="retryOne(row)"
+                @click.stop.prevent="retryOne(row)"
                 style="margin-left: 4px"
               >重试</el-button>
               <el-tooltip v-if="row.error_message" :content="row.error_message" placement="top">
@@ -632,8 +779,8 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
         </el-table-column>
         <el-table-column label="操作" width="80">
           <template #default="{ row }">
-            <el-button link type="primary" @click.stop="openDetail(row.job_id)">详情</el-button>
-            <el-button link type="danger" @click.stop="deleteResult(row)">删除</el-button>
+            <el-button link type="primary" @click.stop.prevent="openDetail(row.job_id)">详情</el-button>
+            <el-button link type="danger" @click.stop.prevent="deleteResult(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -675,6 +822,55 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
 </template>
 
 <style scoped>
+.task-status-banner {
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid #dfe5ee;
+  background: rgba(255, 255, 255, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.task-status-banner.is-primary {
+  border-color: rgba(58, 111, 247, 0.22);
+  background: rgba(58, 111, 247, 0.08);
+}
+
+.task-status-banner.is-success {
+  border-color: rgba(34, 197, 94, 0.2);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.task-status-banner.is-warning {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: rgba(245, 158, 11, 0.09);
+}
+
+.task-status-banner.is-error {
+  border-color: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.task-status-main {
+  min-width: 0;
+}
+
+.task-status-title {
+  color: #18263f;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.task-status-desc {
+  margin-top: 4px;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .report-progress {
   margin-bottom: 16px;
   padding: 18px 20px;

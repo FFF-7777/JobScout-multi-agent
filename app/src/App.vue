@@ -40,7 +40,9 @@ const active = computed(() => route.name);
     <main>
       <router-view v-slot="{ Component }">
         <Suspense>
-          <component :is="Component" />
+          <template #default>
+            <component :is="Component" />
+          </template>
           <template #fallback>
             <RouteViewSkeleton />
           </template>

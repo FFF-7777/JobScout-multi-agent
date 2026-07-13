@@ -23,9 +23,11 @@ def get_runtime_meta():
         "match_agent_concurrency": settings.match_agent_concurrency,
         "report_agent_concurrency": settings.report_agent_concurrency,
         "match_two_tier": settings.match_two_tier,
+        "deep_research_enabled": settings.deep_research_enabled,
+        "deep_research_strategy": settings.deep_research_strategy,
         "assumptions": {
-            "quick_seconds_per_job": 20,
-            "deep_seconds_per_job": 90,
+            "quick_seconds_per_job": 40,
+            "deep_seconds_per_job": 70,
             "report_overhead_seconds": 5,
         },
     }

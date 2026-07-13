@@ -33,9 +33,11 @@ const DEFAULT_RUNTIME_META: AgentRuntimeMeta = {
   match_agent_concurrency: 4,
   report_agent_concurrency: 6,
   match_two_tier: true,
+  deep_research_enabled: false,
+  deep_research_strategy: "auto",
   assumptions: {
-    quick_seconds_per_job: 20,
-    deep_seconds_per_job: 90,
+    quick_seconds_per_job: 40,
+    deep_seconds_per_job: 70,
     report_overhead_seconds: 5,
   },
 };
@@ -44,7 +46,7 @@ const STATUS_META: Record<string, { label: string; tone: string }> = {
   pending: { label: "等待中", tone: "muted" },
   running: { label: "执行中", tone: "primary" },
   success: { label: "已完成", tone: "success" },
-  failed: { label: "澶辫触", tone: "danger" },
+  failed: { label: "失败", tone: "danger" },
   cancelled: { label: "已中断", tone: "warning" },
 };
 
@@ -64,7 +66,14 @@ function isFinished(taskStatus: string) {
 }
 
 function isCancelled(step: AgentRun) {
-  return step.status === "failed" && step.error_message === "鐢ㄦ埛涓";
+  const message = String(step.error_message || "").toLowerCase();
+  return (
+    step.status === "failed" &&
+    (message.includes("用户中止") ||
+      message.includes("鐢ㄦ埛涓") ||
+      message.includes("aborted") ||
+      message.includes("cancel"))
+  );
 }
 
 function stepStatusKey(step: AgentRun) {
@@ -137,6 +146,20 @@ const basicJobCount = computed(() =>
 const parsedJobCount = computed(
   () => selectedJobs.value.filter((job) => job.parse_status === "success").length
 );
+const researchedJobCount = computed(
+  () => (runtime.value.deep_research_enabled ? deepJobCount.value : 0)
+);
+const quickRounds = computed(() => {
+  const concurrency = Math.max(1, runtime.value.match_agent_concurrency || 1);
+  if (!basicJobCount.value) return 0;
+  return Math.ceil(basicJobCount.value / concurrency);
+});
+const deepRounds = computed(() => {
+  const concurrency = Math.max(1, runtime.value.match_agent_concurrency || 1);
+  const deepTargetCount = runtime.value.match_two_tier ? deepJobCount.value : selectedJobs.value.length;
+  if (!deepTargetCount) return 0;
+  return Math.ceil(deepTargetCount / concurrency);
+});
 
 const failedParsedJobs = computed(
   () => selectedJobs.value.filter((job) => job.parse_status === "failed")
@@ -145,14 +168,10 @@ const failedParsedJobs = computed(
 const runtime = computed(() => runtimeMeta.value ?? DEFAULT_RUNTIME_META);
 
 const estimatedMatchSeconds = computed(() => {
-  const concurrency = Math.max(1, runtime.value.match_agent_concurrency || 1);
-  const quickRounds = basicJobCount.value ? Math.ceil(basicJobCount.value / concurrency) : 0;
-  const deepTargetCount = runtime.value.match_two_tier ? deepJobCount.value : selectedJobs.value.length;
-  const deepRounds = deepTargetCount ? Math.ceil(deepTargetCount / concurrency) : 0;
   if (!selectedJobs.value.length) return 0;
   return (
-    quickRounds * runtime.value.assumptions.quick_seconds_per_job +
-    deepRounds * runtime.value.assumptions.deep_seconds_per_job
+    quickRounds.value * runtime.value.assumptions.quick_seconds_per_job +
+    deepRounds.value * runtime.value.assumptions.deep_seconds_per_job
   );
 });
 
@@ -184,7 +203,9 @@ const simulatedProgress = computed(() => {
 const matchStep = computed(() => steps.value.find((step) => step.agent_name === "Match Agent") || null);
 const reportStep = computed(() => steps.value.find((step) => step.agent_name === "Report Agent") || null);
 const hasMatchResults = computed(
-  () => (matchStep.value?.completed_items ?? 0) > 0 || (matchStep.value?.progress ?? 0) > 0
+  () =>
+    (matchStep.value?.completed_items ?? 0) > 0 ||
+    Number((matchStep.value?.output_json as any)?.count ?? 0) > 0
 );
 
 const overallProgress = computed(() => {
@@ -199,6 +220,71 @@ const taskStatusLabel = computed(() => {
   if (status.value === "completed_with_errors") return "部分完成";
   if (status.value === "failed") return "执行失败";
   return "执行中";
+});
+
+const cancelledStepCount = computed(() =>
+  steps.value.filter((step) => isCancelled(step)).length
+);
+
+const taskAlert = computed(() => {
+  if (running.value && connError.value) {
+    return {
+      type: "warning" as const,
+      title: "与后端连接异常，正在自动重试。",
+      description: "任务本身可能仍在后台继续执行，页面会持续轮询恢复状态。",
+    };
+  }
+  if (!status.value) return null;
+  if (status.value === "completed") {
+    return {
+      type: "success" as const,
+      title: "分析已完成",
+      description: hasMatchResults.value ? "推荐结果已经可查看，后续深度报告可按需生成。" : "任务已结束。",
+    };
+  }
+  if (status.value === "completed_with_errors") {
+    return {
+      type: "warning" as const,
+      title: hasMatchResults.value ? "分析已完成，但存在异常项" : "分析已结束，但未产出可用结果",
+      description: hasMatchResults.value
+        ? "建议先展开执行明细，检查失败岗位后再决定是否重试。"
+        : "建议先展开执行明细，确认失败原因后再重试，本次没有可直接查看的匹配结果。",
+    };
+  }
+  if (status.value === "failed") {
+    if (cancelledStepCount.value > 0) {
+      return {
+        type: "info" as const,
+        title: "任务已中断",
+        description: "已完成的数据会保留，未完成岗位不会继续执行。",
+      };
+    }
+    return {
+      type: "error" as const,
+      title: "任务执行失败",
+      description: "可以检查执行明细中的错误原因，再重新发起分析。",
+    };
+  }
+  return null;
+});
+
+const estimatedBreakdown = computed(() => {
+  if (!selectedJobs.value.length) return "尚未选择岗位";
+  const parts: string[] = [];
+  if (basicJobCount.value > 0) {
+    parts.push(
+      `基础分析 ${basicJobCount.value} 个，按并发 ${runtime.value.match_agent_concurrency} 分成 ${quickRounds.value} 轮，约 ${fmtEstimate(quickRounds.value * runtime.value.assumptions.quick_seconds_per_job)}`
+    );
+  }
+  if (deepJobCount.value > 0) {
+    parts.push(
+      `深度分析 ${deepJobCount.value} 个，按并发 ${runtime.value.match_agent_concurrency} 分成 ${deepRounds.value} 轮，约 ${fmtEstimate(deepRounds.value * runtime.value.assumptions.deep_seconds_per_job)}`
+    );
+  }
+  if (!parts.length) {
+    parts.push(`共 ${selectedJobs.value.length} 个岗位，按并发 ${runtime.value.match_agent_concurrency} 估算`);
+  }
+  return parts.join("；");
 });
 
 const runHeadline = computed(() => {
@@ -254,17 +340,32 @@ function stageProgress(step: AgentRun | null) {
 
 function conciseStepSummary(step: AgentRun | null, fallback: string) {
   if (!step) return fallback;
+  if (isCancelled(step)) {
+    return "该阶段已被用户手动中断，已完成的数据会保留。";
+  }
   if (step.agent_name === "Match Agent") {
     if (step.status === "running") {
+      if (runtime.value.deep_research_enabled && deepJobCount.value > 0) {
+        return step.current_item || `正在并发分析 ${selectedJobs.value.length} 个岗位，其中 ${deepJobCount.value} 个会补充深度研究`;
+      }
       return step.current_item || `正在并发分析 ${selectedJobs.value.length} 个岗位`;
     }
     if (step.status === "success") {
-      return `已完成 ${step.completed_items} 个岗位匹配`;
+      return `已完成 ${step.completed_items} 个岗位匹配` + (researchedJobCount.value ? `，其中 ${researchedJobCount.value} 个包含深度研究` : "");
+    }
+    if (step.status === "failed") {
+      if (!hasMatchResults.value) {
+        return "本阶段执行失败，且没有产出可直接查看的匹配结果。";
+      }
+      return step.failed_items > 0 ? `本阶段有 ${step.failed_items} 个岗位失败，请展开明细查看原因。` : "本阶段执行失败。";
     }
   }
   if (step.agent_name === "Report Agent") {
     if (hasMatchResults.value) {
       return "基础结果已经可查看，深度报告可在结果页按需生成。";
+    }
+    if (step.status === "failed") {
+      return "由于前序匹配未产出可用结果，本阶段没有继续生成报告。";
     }
   }
   return step.summary || fallback;
@@ -351,7 +452,7 @@ async function start(auto = false) {
     return;
   }
   if (selectedJobs.value.length === 0) {
-    if (!auto) ElMessage.warning("璇峰厛鍦ㄥ矖浣嶅鍏ラ〉閫夋嫨瑕佸垎鏋愮殑宀椾綅");
+    if (!auto) ElMessage.warning("请先在岗位导入页选择要分析的岗位");
     router.push("/jobs");
     return;
   }
@@ -457,24 +558,28 @@ onUnmounted(() => {
     <section class="run-hero card">
       <div class="run-hero-main">
         <div class="eyebrow">Execution Flow</div>
-        <h1>鍒嗘瀽鎵ц鍙</h1>
+        <h1>分析执行台</h1>
         <p>{{ runHeadline }}</p>
 
         <div class="run-hero-metrics">
           <div class="metric-card">
-            <span>褰撳墠绠€鍘</span>
-            <b>{{ store.resumeName || "鏈€夋嫨" }}</b>
+            <span>当前简历</span>
+            <b>{{ store.resumeName || "未选择" }}</b>
           </div>
           <div class="metric-card">
-            <span>鍒嗘瀽宀椾綅</span>
-            <b>{{ selectedJobs.length }} 涓</b>
+            <span>分析岗位</span>
+            <b>{{ selectedJobs.length }} 个</b>
           </div>
           <div class="metric-card">
-            <span>娣卞害鍒嗘瀽</span>
-            <b>{{ deepJobCount }} 涓</b>
+            <span>深度分析</span>
+            <b>{{ deepJobCount }} 个</b>
           </div>
           <div class="metric-card">
-            <span>鍖归厤骞跺彂</span>
+            <span>深度研究</span>
+            <b>{{ runtime.deep_research_enabled ? `${researchedJobCount} 个触发` : "未开启" }}</b>
+          </div>
+          <div class="metric-card">
+            <span>匹配并发</span>
             <b>{{ runtime.match_agent_concurrency }}</b>
           </div>
         </div>
@@ -483,7 +588,7 @@ onUnmounted(() => {
       <div class="run-hero-side">
         <div class="status-panel">
           <div class="status-top">
-            <span class="status-kicker">杩愯鐘舵€</span>
+            <span class="status-kicker">运行状态</span>
             <el-tag :type="running ? 'primary' : isFinished(status) ? (status === 'completed' ? 'success' : 'warning') : 'info'">
               {{ taskStatusLabel }}
             </el-tag>
@@ -491,37 +596,44 @@ onUnmounted(() => {
 
           <div class="status-grid">
             <div class="status-box">
-              <span>棰勮鎬荤敤鏃</span>
+              <span>预计总用时</span>
               <b>{{ estimatedTotalSeconds ? fmtEstimate(estimatedTotalSeconds) : "待估算" }}</b>
             </div>
             <div class="status-box">
-              <span>鍓╀綑鏃堕棿</span>
+              <span>剩余时间</span>
               <b>{{ running ? fmtEstimate(remainingSeconds) : "—" }}</b>
             </div>
             <div class="status-box">
-              <span>宸茶€楁椂闂</span>
+              <span>已耗时</span>
               <b>{{ running || isFinished(status) ? fmtDuration(elapsedSeconds) : "00:00" }}</b>
             </div>
             <div class="status-box">
-              <span>鍚庣骞跺彂</span>
-              <b>{{ runtime.match_agent_concurrency }} 璺尮閰</b>
+              <span>后端并发</span>
+              <b>{{ runtime.match_agent_concurrency }} 路匹配</b>
+            </div>
+            <div class="status-box">
+              <span>深度研究策略</span>
+              <b>{{ runtime.deep_research_enabled ? runtime.deep_research_strategy : "off" }}</b>
             </div>
           </div>
 
           <div class="hero-actions">
             <el-button v-if="!running && !status" type="primary" @click="start()">
-              寮€濮嬪垎鏋?            </el-button>
+              开始分析
+            </el-button>
             <el-button v-else-if="running" type="primary" loading disabled>
-              鍒嗘瀽鎵ц涓?            </el-button>
+              分析执行中
+            </el-button>
             <el-button v-else plain @click="reset">
-              閲嶇疆鐘舵€?            </el-button>
+              重置状态
+            </el-button>
 
             <el-button v-if="running" type="danger" plain :loading="aborting" @click="abort">
-              涓柇浠诲姟
+              中断任务
             </el-button>
 
             <el-button type="primary" :disabled="!hasMatchResults" @click="router.push('/results')">
-              鏌ョ湅缁撴灉
+              查看结果
             </el-button>
           </div>
         </div>
@@ -529,27 +641,35 @@ onUnmounted(() => {
     </section>
 
     <el-alert
-      v-if="connError && running"
-      type="warning"
+      v-if="taskAlert"
+      :type="taskAlert.type"
+      :title="taskAlert.title"
+      :description="taskAlert.description"
       :closable="false"
       show-icon
-      title="与后端连接异常，正在自动重试。"
       style="margin-bottom: 14px"
     />
 
     <section class="card progress-shell">
       <div class="section-head">
         <div>
-          <div class="section-title">鎵ц杩涘害</div>
-          <div class="section-sub">鎸夊綋鍓嶅悗绔苟鍙戞暟涓庢墍閫夊矖浣嶈妯′及绠楋紝鐢ㄤ簬缁欑敤鎴风ǔ瀹氱殑绛夊緟鍙嶉銆</div>
+          <div class="section-title">执行进度</div>
+          <div class="section-sub">根据后端并发数、基础/深度岗位数量估算等待时间，给用户稳定、可解释的进度反馈。</div>
         </div>
         <div class="progress-percent">{{ overallProgress }}%</div>
       </div>
       <div class="countdown-row">
-        <span>鍩虹鍒嗘瀽鎸?20 绉?/ 宀椾綅浼扮畻锛屾繁搴﹀垎鏋愭寜 90 绉?/ 宀椾綅浼扮畻锛屽苟鑷姩鎸夊苟鍙戞暟鎶樼畻銆</span>
-        <b v-if="running">棰勮鍓╀綑 {{ fmtEstimate(remainingSeconds) }}</b>
-        <b v-else-if="isFinished(status)">鏈鍒嗘瀽宸茬粨鏉</b>
-        <b v-else>绛夊緟寮€濮</b>
+        <span>
+          基础分析约 {{ runtime.assumptions.quick_seconds_per_job }} 秒 / 岗位，深度分析约
+          {{ runtime.assumptions.deep_seconds_per_job }} 秒 / 岗位，并按后端并发分轮计算。
+        </span>
+        <b v-if="running">预计剩余 {{ fmtEstimate(remainingSeconds) }}</b>
+        <b v-else-if="isFinished(status)">本次分析已结束</b>
+        <b v-else>等待开始</b>
+      </div>
+      <div class="countdown-breakdown">{{ estimatedBreakdown }}</div>
+      <div v-if="runtime.deep_research_enabled && deepJobCount > 0" class="research-inline-note">
+        深度研究已开启：仅对 {{ deepJobCount }} 个深度岗位补充外部语境，快速分析岗位不会触发。
       </div>
       <div class="fake-progress">
         <div class="fake-progress-bar" :style="{ width: `${overallProgress}%` }"></div>
@@ -574,7 +694,7 @@ onUnmounted(() => {
         </div>
         <p class="prereq-desc">{{ card.desc }}</p>
         <div v-if="card.key === 'jobs' && failedParsedJobs.length" class="prereq-errors">
-          <span v-for="job in failedParsedJobs.slice(0, 3)" :key="job.id">{{ job.job_title || `宀椾綅 ${job.id}` }}</span>
+          <span v-for="job in failedParsedJobs.slice(0, 3)" :key="job.id">{{ job.job_title || `岗位 ${job.id}` }}</span>
         </div>
       </article>
     </section>
@@ -584,7 +704,7 @@ onUnmounted(() => {
         <div class="stage-head">
           <div>
             <div class="stage-kicker">Stage 01</div>
-            <div class="stage-title">鍖归厤鍒嗘瀽</div>
+            <div class="stage-title">匹配分析</div>
           </div>
           <span class="stage-badge" :class="`tone-${stageTone(matchStep)}`">
             {{ stageLabel(matchStep, "待开始") }}
@@ -594,25 +714,26 @@ onUnmounted(() => {
           <div class="stage-progress-bar" :style="{ width: `${stageProgress(matchStep)}%` }"></div>
         </div>
         <div class="stage-stats">
-          <span>鎬诲矖浣?{{ selectedJobs.length }}</span>
-          <span>鍩虹 {{ basicJobCount }} / 娣卞害 {{ deepJobCount }}</span>
-          <span>骞跺彂 {{ runtime.match_agent_concurrency }}</span>
+          <span>总岗位 {{ selectedJobs.length }}</span>
+          <span>基础 {{ basicJobCount }} / 深度 {{ deepJobCount }}</span>
+          <span>并发 {{ runtime.match_agent_concurrency }}</span>
+          <span v-if="runtime.deep_research_enabled && deepJobCount > 0">研究 {{ deepJobCount }} 个深度岗位</span>
         </div>
         <div class="stage-summary">{{ conciseStepSummary(matchStep, "点击开始后将并发执行岗位匹配。") }}</div>
         <div v-if="matchStep" class="stage-detail-row">
-          <span>宸插畬鎴?<b>{{ matchStep.completed_items }}</b></span>
-          <span v-if="matchStep.failed_items > 0" class="danger">澶辫触 <b>{{ matchStep.failed_items }}</b></span>
-          <span>澶勭悊涓?<b>{{ matchStep.in_flight_items?.length ?? 0 }}</b></span>
+          <span>已完成 <b>{{ matchStep.completed_items }}</b></span>
+          <span v-if="matchStep.failed_items > 0" class="danger">失败 <b>{{ matchStep.failed_items }}</b></span>
+          <span>处理中 <b>{{ matchStep.in_flight_items?.length ?? 0 }}</b></span>
         </div>
         <div v-if="matchStep?.in_flight_items?.length" class="inflight-tags">
           <span v-for="item in matchStep.in_flight_items" :key="item.job_id">
-            {{ item.job_title || `宀椾綅 ${item.job_id}` }}
+            {{ item.job_title || `岗位 ${item.job_id}` }}
           </span>
         </div>
 
         <div class="detail-toggle">
           <el-button link type="primary" size="small" :loading="itemRunsLoading" @click="toggleItemRuns">
-            {{ itemRunsOpen ? "鏀惰捣鎵ц鏄庣粏" : "鏌ョ湅鎵ц鏄庣粏" }}
+            {{ itemRunsOpen ? "收起执行明细" : "查看执行明细" }}
           </el-button>
         </div>
 
@@ -620,16 +741,16 @@ onUnmounted(() => {
           <table class="detail-table">
             <thead>
               <tr>
-                <th>宀椾綅</th>
-                <th>妯″紡</th>
-                <th>鐘舵€</th>
-                <th>鑰楁椂</th>
-                <th>閿欒</th>
+                <th>岗位</th>
+                <th>模式</th>
+                <th>状态</th>
+                <th>耗时</th>
+                <th>错误</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="row in itemRuns" :key="row.id" :class="{ fail: row.status === 'failed' }">
-                <td>{{ row.item_label || `宀椾綅 ${row.item_id}` }}</td>
+                <td>{{ row.item_label || `岗位 ${row.item_id}` }}</td>
                 <td>{{ row.tier === "deep" ? "深度" : row.tier === "quick" ? "基础" : "—" }}</td>
                 <td>{{ row.status === "done" ? "完成" : row.status === "failed" ? "失败" : row.status === "running" ? "执行中" : "排队中" }}</td>
                 <td>{{ fmtItemDuration(row.duration_ms) }}</td>
@@ -644,33 +765,38 @@ onUnmounted(() => {
         <div class="stage-head">
           <div>
             <div class="stage-kicker">Stage 02</div>
-            <div class="stage-title">缁撴灉鏁寸悊</div>
+            <div class="stage-title">结果整理</div>
           </div>
           <span class="stage-badge" :class="`tone-${stageTone(reportStep)}`">
-            {{ stageLabel(reportStep, "绛夊緟鍖归厤瀹屾垚") }}
+            {{ stageLabel(reportStep, "等待匹配完成") }}
           </span>
         </div>
         <div class="stage-progress-track">
           <div class="stage-progress-bar" :style="{ width: `${stageProgress(reportStep)}%` }"></div>
         </div>
         <div class="stage-stats">
-          <span>鎶ュ憡鏁寸悊涓鸿交閲忛樁娈</span>
-          <span>涓嶄細闃诲鏌ョ湅缁撴灉</span>
+          <span>轻量收尾阶段</span>
+          <span>匹配结果已实时写入</span>
+          <span>不阻塞查看结果</span>
         </div>
         <div class="stage-summary">
-          {{ conciseStepSummary(reportStep, "匹配结果一旦开始产出，用户就可以直接进入结果页，无需在这里等待完整原始输出。") }}
+          {{ conciseStepSummary(reportStep, "本阶段只同步最终状态、失败明细与报告入口；匹配结果一旦产出，就可以先去结果页查看。") }}
         </div>
         <div class="mini-points">
-          <span>涓嶅啀灞曠ず鍐楅暱鍘熷 JSON</span>
-          <span>缁撴灉椤靛彲缁х画鐢熸垚娣卞害鎶ュ憡</span>
-          <span>杩愯椤典笓娉ㄧ瓑寰呭弽棣堜笌鐘舵€佹劅鐭</span>
+          <span>推荐结果：完成后可立即查看匹配分与投递建议</span>
+          <span>失败岗位：展开执行明细查看原因，回到结果页单项重试</span>
+          <span>报告生成：基础 / 深度报告会分别保存到报告导出页</span>
+          <span>
+            估时规则：基础约 {{ runtime.assumptions.quick_seconds_per_job }} 秒 / 岗位，深度约
+            {{ runtime.assumptions.deep_seconds_per_job }} 秒 / 岗位，按并发分轮折算
+          </span>
         </div>
       </article>
     </section>
 
     <section class="compact-agent-row">
       <article class="card compact-agent">
-        <div class="compact-title">绠€鍘嗘櫤鑳戒綋</div>
+        <div class="compact-title">简历智能体</div>
         <div class="compact-badges">
           <span v-for="item in conciseOutput(steps.find((step) => step.agent_name === 'Resume Agent') || null)" :key="item">
             {{ item }}
@@ -678,12 +804,12 @@ onUnmounted(() => {
         </div>
       </article>
       <article class="card compact-agent">
-        <div class="compact-title">宀椾綅鏅鸿兘浣</div>
+        <div class="compact-title">岗位智能体</div>
         <div class="compact-badges">
           <span v-for="item in conciseOutput(steps.find((step) => step.agent_name === 'Job Agent') || null)" :key="item">
             {{ item }}
           </span>
-          <span v-if="!steps.find((step) => step.agent_name === 'Job Agent')">瀵煎叆闃舵宸插畬鎴愮粨鏋勫寲瑙ｆ瀽</span>
+          <span v-if="!steps.find((step) => step.agent_name === 'Job Agent')">导入阶段已完成结构化解析</span>
         </div>
       </article>
     </section>
@@ -804,6 +930,13 @@ onUnmounted(() => {
 .progress-shell {
   padding-top: 20px;
   padding-bottom: 20px;
+}
+
+.countdown-breakdown {
+  margin-top: 8px;
+  color: #71809a;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .section-head {

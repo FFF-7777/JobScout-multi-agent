@@ -81,6 +81,9 @@ const appDecision = computed(() => (dj.value as any)?.application_decision ?? nu
 const nextActions = computed(() => (dj.value as any)?.next_actions ?? []);
 const confidence = computed(() => (dj.value as any)?.confidence ?? null);
 const hardConditionResult = computed(() => (dj.value as any)?.hard_condition_result ?? null);
+const researchSummary = computed(() => (dj.value as any)?.research_summary ?? []);
+const skillEvidenceSummary = computed(() => (dj.value as any)?.skill_evidence_summary ?? null);
+const skillEvidence = computed(() => (dj.value as any)?.skill_evidence ?? []);
 
 const DETAIL_SECTIONS = ["硬条件", "五维评分", "完整匹配点", "风险提示", "面试准备", "原始JD"];
 const openSections = ref<Record<string, boolean>>({
@@ -515,6 +518,73 @@ function gotoResults() {
               <div class="module-head">投递前行动</div>
               <div v-for="(a, i) in nextActions" :key="i" class="module-item">
                 <span class="action-num">{{ i + 1 }}.</span> {{ a }}
+              </div>
+            </div>
+            <div v-if="skillEvidenceSummary" class="module-card module-evidence-card">
+              <div class="module-head">技能证据概览</div>
+              <div class="evidence-summary-grid">
+                <div class="evidence-pill success">
+                  <span>直接命中</span>
+                  <b>{{ skillEvidenceSummary.confirmed_count ?? 0 }}</b>
+                </div>
+                <div class="evidence-pill info">
+                  <span>部分命中</span>
+                  <b>{{ skillEvidenceSummary.partial_count ?? 0 }}</b>
+                </div>
+                <div class="evidence-pill primary">
+                  <span>可迁移</span>
+                  <b>{{ skillEvidenceSummary.transferable_count ?? 0 }}</b>
+                </div>
+                <div class="evidence-pill muted">
+                  <span>未体现</span>
+                  <b>{{ skillEvidenceSummary.not_shown_count ?? 0 }}</b>
+                </div>
+              </div>
+              <div v-if="skillEvidence.length" class="evidence-list">
+                <div
+                  v-for="(item, i) in skillEvidence.slice(0, 8)"
+                  :key="`evidence-${i}-${item.skill}`"
+                  class="evidence-list-item"
+                >
+                  <div class="evidence-top">
+                    <b>{{ item.skill }}</b>
+                    <el-tag
+                      size="small"
+                      :type="
+                        item.bucket === 'confirmed'
+                          ? 'success'
+                          : item.bucket === 'not_shown'
+                            ? 'danger'
+                            : 'info'
+                      "
+                    >
+                      {{
+                        item.bucket === "confirmed"
+                          ? "直接命中"
+                          : item.bucket === "partial"
+                            ? "部分命中"
+                            : item.bucket === "transferable"
+                              ? "可迁移"
+                              : "未体现"
+                      }}
+                    </el-tag>
+                  </div>
+                  <div class="evidence-note">
+                    <span>岗位要求：</span>{{ item.job_requirement || item.skill }}
+                  </div>
+                  <div class="evidence-note">
+                    <span>简历证据：</span>{{ item.resume_evidence || "当前简历未提供直接证据" }}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="researchSummary.length" class="module-card module-research">
+              <div class="module-head">深度研究补充</div>
+              <div class="module-empty" style="margin-bottom: 10px">
+                这部分来自深度分析阶段的外部语境补充，用来帮助解释岗位技术要求，不会在快速分析中出现。
+              </div>
+              <div v-for="(item, i) in researchSummary" :key="`research-${i}`" class="module-item">
+                <span class="action-num">{{ i + 1 }}.</span> {{ item }}
               </div>
             </div>
           </div>
@@ -1087,6 +1157,8 @@ ol {
 .core-modules { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
 .module-card { background: #ffffff; border-radius: 10px; padding: 18px 20px; border: 1px solid #e1e6ed; }
 .module-card.module-action { grid-column: 1 / -1; }
+.module-card.module-evidence-card { grid-column: 1 / -1; }
+.module-card.module-research { grid-column: 1 / -1; }
 .module-head { font-size: 15px; font-weight: 700; color: #1f2733; margin-bottom: 10px; }
 .module-empty { color: #8a94a6; font-size: 13px; font-style: italic; }
 .module-item { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #f0f2f5; }
@@ -1100,6 +1172,64 @@ ol {
 .module-success { border-top: 2px solid #55a476; }
 .module-warning { border-top: 2px solid #c58a3b; }
 .module-action { border-top: 2px solid #5279d8; }
+.module-evidence-card { border-top: 2px solid #6b7bf0; }
+.module-research { border-top: 2px solid #4b83ff; background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); }
+
+.evidence-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.evidence-pill {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #e8edf5;
+  background: #fafbfd;
+}
+.evidence-pill span {
+  display: block;
+  margin-bottom: 6px;
+  color: #7b8798;
+  font-size: 12px;
+  font-weight: 650;
+}
+.evidence-pill b {
+  color: #1f2733;
+  font-size: 20px;
+  font-weight: 800;
+}
+.evidence-pill.success { background: #f3fbf6; border-color: #d7efdf; }
+.evidence-pill.info { background: #f6f8fc; border-color: #e3e8f1; }
+.evidence-pill.primary { background: #f3f7ff; border-color: #dce6ff; }
+.evidence-pill.muted { background: #fbfbfc; border-color: #eceff3; }
+
+.evidence-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.evidence-list-item {
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid #e7ecf3;
+  background: #fff;
+}
+.evidence-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.evidence-note {
+  color: #556274;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.evidence-note span {
+  color: #8a94a6;
+}
 
 .deep-progress {
   margin: 16px 0;
@@ -1158,6 +1288,8 @@ ol {
   .grid2 { grid-template-columns: 1fr; }
   .score-body { flex-direction: column; align-items: flex-start; }
   .core-modules { grid-template-columns: 1fr; }
+  .evidence-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .evidence-list { grid-template-columns: 1fr; }
   .decision-row { flex-direction: column; }
   .overview-grid { grid-template-columns: 1fr; }
   .analysis-section-grid { grid-template-columns: 1fr; }

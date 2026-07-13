@@ -27,7 +27,9 @@ from schemas.job import JobProfile
 from schemas.job import JobImportUrlRequest
 from schemas.match import ApplicationDecision, CareerAlignment, GapItem, HrScreening, StrengthItem
 from schemas.report import JobReport
-from services import job_parse_queue, report_agent, workflow
+from schemas.resume import ResumeProfile
+from services import job_parse_queue, report_agent, tech_matcher, workflow
+from services import research_router
 from services import url_fetcher
 
 
@@ -73,6 +75,50 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertEqual(report["strengths"][0]["evidence"], "项目使用 LangChain 构建检索链路")
         self.assertEqual(report["gaps"][0]["action"], "补充离线评测方案并写入项目说明")
         self.assertEqual(report["action_plan"][0], "把检索准确率与响应耗时补充到简历项目中")
+
+    def test_tech_matcher_marks_missing_required_skill(self):
+        resume = ResumeProfile.model_validate(
+            {
+                "skills": ["Python", "FastAPI"],
+                "projects": [{"name": "RAG 项目", "keywords": ["LangChain", "RAG"]}],
+            }
+        )
+        job = JobProfile(
+            required_skills=["Python", "vLLM", "RAG"],
+            preferred_skills=["LangGraph"],
+        )
+
+        items, summary = tech_matcher.build_skill_evidence(resume, job)
+
+        self.assertEqual(summary.required_total, 3)
+        self.assertTrue(any(item.skill == "vLLM" and item.bucket == "not_shown" for item in items))
+        self.assertTrue(any(item.skill == "Python" and item.bucket == "confirmed" for item in items))
+
+    def test_research_router_only_enables_for_deep_full_mode(self):
+        with patch.object(
+            research_router,
+            "get_settings",
+            return_value=SimpleNamespace(
+                deep_research_enabled=True,
+                deep_research_strategy="auto",
+                deep_research_max_items=6,
+            ),
+        ):
+            plan_quick = research_router.build_research_plan(
+                JobProfile(job_title="AI 后端开发", required_skills=["Python", "RAG"]),
+                tier="quick",
+                analyze_mode="summary",
+            )
+            plan_deep = research_router.build_research_plan(
+                JobProfile(job_title="AI 后端开发", city="深圳", required_skills=["Python", "RAG"]),
+                tier="deep",
+                analyze_mode="full",
+            )
+
+        self.assertFalse(plan_quick.enabled)
+        self.assertEqual(plan_quick.strategy, "off")
+        self.assertTrue(plan_deep.enabled)
+        self.assertTrue(plan_deep.queries)
 
     def test_summary_only_match_finishes_without_deep_phase(self):
         updates = []

@@ -392,6 +392,10 @@ onBeforeUnmount(() => {
 });
 
 function startAnalyze() {
+  if (!hasSelected.value) {
+    ElMessage.warning("请先选择要分析的岗位");
+    return;
+  }
   if (!store.resumeId) {
     ElMessage.warning("请先在「简历画像」页解析简历");
     router.push("/resume");
@@ -406,11 +410,12 @@ function startAnalyze() {
 </script>
 
 <template>
-  <div class="page">
-    <div class="page-title">岗位导入</div>
-    <div class="page-sub">支持粘贴单个 / 批量 JD、上传 Excel · CSV，或通过岗位链接自动抓取。勾选后支持单条 / 批量删除与重新解析。</div>
+  <div class="page jobs-page-plain">
+    <section class="jobs-hero card">
+      <div class="page-title">岗位导入</div>
+      <div class="page-sub">支持粘贴单个 / 批量 JD、上传 Excel · CSV，或通过岗位链接自动抓取。勾选后支持单条 / 批量删除与重新解析。</div>
 
-    <div class="card">
+      <div class="jobs-intake-panel">
       <el-input v-model="jdText" type="textarea" :rows="7" placeholder="粘贴岗位 JD…（批量粘贴可勾选下方拆分）" />
       <div style="margin-top: 12px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap">
         <el-checkbox v-model="splitBatch">按分隔线 / 空行拆分为多个岗位</el-checkbox>
@@ -490,7 +495,8 @@ function startAnalyze() {
       <div class="url-help">
         当前仅稳定支持智联招聘链接导入。BOSS直聘、拉勾、猎聘、51job 常受验证码、登录态或反爬限制影响，建议直接粘贴 JD 或使用截图 OCR 导入。
       </div>
-    </div>
+      </div>
+    </section>
 
     <div class="card">
       <div class="toolbar">
@@ -662,6 +668,35 @@ function startAnalyze() {
   align-items: center;
   gap: 10px;
 }
+
+.jobs-hero {
+  padding: 22px;
+}
+
+.jobs-hero .page-sub {
+  margin-bottom: 18px;
+}
+
+.jobs-intake-panel {
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px solid rgba(173, 188, 218, 0.24);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.jobs-page-plain {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+.jobs-page-plain::before,
+.jobs-page-plain::after {
+  content: none !important;
+  display: none !important;
+}
+
 .sel-hint {
   display: inline-flex;
   align-items: center;

@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # 两段式匹配
     match_two_tier: bool = True
 
+    # 深度研究链路：仅深度分析可启用，快速分析始终不走外部研究
+    deep_research_enabled: bool = False
+    deep_research_strategy: str = "auto"  # off / auto / force
+    deep_research_max_items: int = 6
+
     # 百度 OCR
     baidu_ocr_app_id: str = ""
     baidu_ocr_api_key: str = ""

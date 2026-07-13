@@ -1,11 +1,4 @@
-"""Match Agent：对比简历画像与岗位画像，输出匹配评分与等级。
-
-评分融合：
-- LLM 给出 5 个维度分（tech_stack / project_exp / role_direction / qualification / logistics）。
-- 规则分：技术栈交集覆盖率（岗位 required_skills 中被简历 skills 覆盖的比例）。
-- 最终 tech_stack 维度 = 0.6*规则分 + 0.4*LLM 分（规则更客观，防止 LLM 虚高）。
-- 总分按权重加权：技术栈 30% / 项目经验 30% / 岗位方向 20% / 学历求职条件 10% / 城市薪资 10%。
-"""
+"""Match Agent：对比简历画像与岗位画像，输出匹配评分与证据。"""
 from __future__ import annotations
 
 import hashlib
@@ -25,12 +18,10 @@ from schemas.match import (
     StrengthItem,
 )
 from schemas.resume import ResumeProfile
-from services import llm_service
+from services import application_policy, llm_service, tech_matcher
 
-# Prompt / 融合逻辑版本号。作为匹配缓存键的一部分：
-# 改了匹配提示词或评分融合权重时递增，使旧缓存自动失效、触发重新匹配。
-PROMPT_VERSION = "2"  # v2: 结构化核心优势/短板/HR 初筛/投递决策
-MATCH_POLICY_VERSION = "3"  # v3: 投递决策合并硬条件+分数+方向
+PROMPT_VERSION = "3"
+MATCH_POLICY_VERSION = "4"
 
 WEIGHTS = {
     "tech_stack": 0.30,
@@ -41,27 +32,10 @@ WEIGHTS = {
 }
 
 
-def _normalize(s: str) -> str:
-    return s.strip().lower().replace(" ", "").replace(".", "").replace("-", "")
-
-
 def rule_tech_coverage(resume: ResumeProfile, job: JobProfile) -> float:
-    """技术栈交集覆盖率（0-100）。"""
-    required = job.required_skills or []
-    if not required:
-        return 60.0  # JD 未列明必备技能，给中性分
-    resume_skills = {_normalize(s) for s in resume.skills}
-    # 也把项目关键词纳入技能池
-    for p in resume.projects:
-        for kw in p.keywords:
-            resume_skills.add(_normalize(kw))
-
-    hit = 0
-    for req in required:
-        rq = _normalize(req)
-        if any(rq in rs or rs in rq for rs in resume_skills if rs):
-            hit += 1
-    return round(hit / len(required) * 100, 1)
+    """规则化技术覆盖率（0-100）。"""
+    items, _summary = tech_matcher.build_skill_evidence(resume, job)
+    return tech_matcher.coverage_score(items)
 
 
 def _level_of(score: float) -> str:
@@ -85,18 +59,9 @@ def build_match_cache_key(
     *,
     tier: str = "deep",
     resume_text_hash: str = "",
+    research_hash: str = "",
     policy_version: str = MATCH_POLICY_VERSION,
 ) -> str:
-    """匹配结果缓存键。
-
-    相同 简历画像 + 岗位画像 + 模型 + 分析模式 + 档位(tier) + 简历原文哈希 +
-    评分策略版本 + 权重 时复用，返回 32 位十六进制串（sha256 前 32 字符）。
-
-    P0#3 关键修复：旧键不含 tier / 简历原文哈希 / 策略版本，默认配置下 quick 与 deep
-    同模型同键，deep 阶段会直接命中 quick 结果、跳过深度复核。现把 tier 与
-    resume_text_hash（仅 deep+full 有值）纳入键，确保 quick 与 deep 不会互相命中；
-    并加入 policy_version / weights，评分口径变化时旧缓存自动失效。
-    """
     payload = {
         "resume": resume_profile,
         "job": job_profile,
@@ -104,6 +69,7 @@ def build_match_cache_key(
         "mode": mode,
         "tier": tier,
         "resume_text_hash": resume_text_hash,
+        "research_hash": research_hash,
         "prompt_version": prompt_version,
         "policy_version": policy_version,
         "weights": WEIGHTS,
@@ -112,25 +78,81 @@ def build_match_cache_key(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
-def _clamp_score(v: object) -> float:
-    """把任意模型输出安全地截断到 [0, 100]，避免异常分导致 Pydantic 校验失败。"""
+def _clamp_score(value: object) -> float:
     try:
-        x = float(v)  # type: ignore[arg-type]
+        x = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
-    if x != x:  # NaN 检查
+    if x != x:
         return 0.0
     return max(0.0, min(100.0, x))
 
 
-def _recommendation_of(level: str) -> str:
-    return {
-        "S": "强烈建议投递",
-        "A": "优先投递",
-        "B": "可以投递",
-        "C": "谨慎投递",
-        "D": "不建议投递",
-    }[level]
+def _fallback_requirement_summary(job: JobProfile) -> list[str]:
+    parts: list[str] = []
+    if job.required_skills:
+        parts.append(f"必备技能：{'、'.join(job.required_skills[:6])}")
+    if job.preferred_skills:
+        parts.append(f"加分项：{'、'.join(job.preferred_skills[:6])}")
+    if job.experience:
+        parts.append(f"经验要求：{job.experience}")
+    if job.education:
+        parts.append(f"学历要求：{job.education}")
+    return parts[:4]
+
+
+def _fallback_top_strengths(
+    skill_evidence,
+    transferable_strengths: list[str],
+) -> list[StrengthItem]:
+    strengths: list[StrengthItem] = []
+    for item in skill_evidence:
+        if item.bucket != "confirmed":
+            continue
+        strengths.append(
+            StrengthItem(
+                title=f"具备 {item.skill} 直接证据",
+                resume_evidence=item.resume_evidence,
+                job_relevance=f"岗位明确要求 {item.job_requirement}",
+            )
+        )
+    for text in transferable_strengths:
+        if len(strengths) >= 3:
+            break
+        strengths.append(
+            StrengthItem(
+                title=text,
+                resume_evidence="来自简历中的相近技术或项目经验",
+                job_relevance="可作为面试或投递时的可迁移说明",
+            )
+        )
+    return strengths[:3]
+
+
+def _fallback_main_gaps(skill_evidence) -> list[GapItem]:
+    gaps: list[GapItem] = []
+    for item in skill_evidence:
+        if item.bucket == "not_shown" and item.source == "required":
+            gaps.append(
+                GapItem(
+                    title=f"缺少 {item.skill} 直接证据",
+                    severity="major",
+                    impact=f"岗位把 {item.job_requirement} 作为明确要求，当前简历未体现。",
+                    short_term_fixable=True,
+                    action=f"在投递前补充与 {item.skill} 相关的项目、课程或实践证据。",
+                )
+            )
+        elif item.bucket == "partial" and item.source == "required":
+            gaps.append(
+                GapItem(
+                    title=f"{item.skill} 证据不够直接",
+                    severity="minor",
+                    impact=f"已有相近经验，但不是岗位点名要求的同一技术。",
+                    short_term_fixable=True,
+                    action=f"在简历或面试表达中，把 {item.resume_evidence} 与 {item.skill} 的迁移关系讲清楚。",
+                )
+            )
+    return gaps[:3]
 
 
 def build_hard_fail_result(
@@ -138,65 +160,31 @@ def build_hard_fail_result(
     job: JobProfile,
     hard_items: list[HardConditionItem] | None = None,
 ) -> MatchResultModel:
-    """硬条件预筛不通过时，不调 LLM，直接给出 skip 决策。"""
     items = hard_items or [HardConditionItem(name=f, status="fail") for f in hard_failures]
+    decision = ApplicationDecision(
+        action="skip",
+        summary="存在硬性条件不满足，当前不建议投递。",
+        reasons=hard_failures[:3],
+    )
     return MatchResultModel(
         score=0.0,
         level="D",
         dimensions=DimensionScores(),
         matched_points=[],
-        missing_points=[f"硬条件不符：{f}" for f in hard_failures],
-        recommendation="不符合硬条件，不建议投递",
-        risk_notes=list(hard_failures),
+        missing_points=[f"硬性条件不符：{failure}" for failure in hard_failures],
+        recommendation=decision.summary,
+        risk_notes=list(hard_failures[:3]),
+        core_job_requirements=_fallback_requirement_summary(job),
         hard_condition_result=HardConditionResult(status="fail", items=items),
-        application_decision=ApplicationDecision(
-            action="skip",
-            summary="硬条件不满足，跳过投递",
-        ),
+        application_decision=decision,
         confidence=100.0,
     )
 
 
-# 深度复核阶段在用户 prompt 末尾追加的强调（方案 B：quick/deep 用不同输入信息，
-# 即便同模型也确实做了一次更严格的复核，而不是原样重复调用）。
 _DEEP_REVIEW_SUFFIX = (
-    "\n\n[深度复核模式] 这是深度复核阶段，请在以上基础上更严格地核对每一项匹配点："
-    "移除任何证据不足的夸大项，对存疑的 1-2 点明确标注「不确定」，"
-    "并结合简历项目细节说明匹配/不匹配的具体理由。"
+    "\n\n[深度复核模式] 这是深度分析阶段，请更严格核对每个判断。"
+    "优先删掉证据不足的乐观结论；若证据不充分，请明确写“当前简历未提供直接证据”。"
 )
-
-
-def _compute_application_decision(
-    score: float,
-    hard_fail: bool,
-    career_score: float,
-    role_direction_score: float,
-) -> str:
-    """基于规则计算投递决策。
-
-    优先考虑硬条件（hard_fail）与职业方向（career_score）；
-    分数低于阈值时即使 career 正常也降级。
-    """
-    if hard_fail:
-        return "skip"
-    if career_score < 40 or role_direction_score < 30:
-        return "selective_apply" if score >= 55 else "skip"
-    if score >= 80:
-        return "priority_apply"
-    if score >= 65:
-        return "apply"
-    if score >= 50:
-        return "selective_apply"
-    return "skip"
-
-
-def _decision_summary_of(action: str, score: float) -> str:
-    return {
-        "priority_apply": f"匹配度 {score} 分，核心方向一致，建议优先投递",
-        "apply": f"匹配度 {score} 分，核心能力匹配，建议投递",
-        "selective_apply": f"匹配度 {score} 分，部分方向有差距，建议选择性投递",
-        "skip": f"匹配度 {score} 分，硬条件或方向不匹配，不建议投递",
-    }.get(action, "")
 
 
 def run(
@@ -204,40 +192,41 @@ def run(
     job: JobProfile,
     *,
     resume_text: str | None = None,
+    research_context: dict | None = None,
     model_role: str = "reasoning",
     tier: str = "deep",
     hard_conditions: list[dict] | None = None,
 ) -> MatchResultModel:
-    """匹配评分与投递决策。
+    skill_evidence, skill_summary = tech_matcher.build_skill_evidence(resume, job)
 
-    resume_text：可选，简历原文（截断到 8000 char）。提供时让模型同时看到
-    结构化画像 + 原文细节，匹配点/缺口更精准，但 prompt token 翻倍。
-    tier：quick（全量快速预排）/ deep（Top-K 或用户指定 full 的深度复核）。
-    hard_conditions：上游 precheck_job 输出的硬条件结构化结果（可选）。
-    """
     resume_block = json.dumps(resume.model_dump(), ensure_ascii=False)
     if resume_text:
-        resume_block += (
-            "\n\n--- 简历原文（用于引用项目细节 / 自我评价）---\n"
-            + resume_text[:8000]
-        )
+        resume_block += "\n\n--- 简历原文（用于补充项目细节）---\n" + resume_text[:8000]
+
     user = prompts.MATCH_USER.format(
         resume_profile=resume_block,
         job_profile=json.dumps(job.model_dump(), ensure_ascii=False),
+        rule_skill_evidence=json.dumps(
+            {
+                "skill_evidence": [item.model_dump() for item in skill_evidence],
+                "skill_evidence_summary": skill_summary.model_dump(),
+            },
+            ensure_ascii=False,
+        ),
+        research_context=json.dumps(research_context or {}, ensure_ascii=False),
     )
     if tier == "deep":
         user += _DEEP_REVIEW_SUFFIX
+
     llm_out = llm_service.chat_json(
         prompts.MATCH_SYSTEM,
         user,
         model_role=model_role,
     )
 
-    # ── 五维评分（LLM + 规则融合）──
     llm_dims = llm_out.get("dimensions", {}) or {}
     llm_tech = _clamp_score(llm_dims.get("tech_stack", 0))
-    rule_tech = rule_tech_coverage(resume, job)
-
+    rule_tech = tech_matcher.coverage_score(skill_evidence)
     dims = DimensionScores(
         tech_stack=_clamp_score(round(0.6 * rule_tech + 0.4 * llm_tech, 1)),
         project_exp=_clamp_score(llm_dims.get("project_exp", 0)),
@@ -258,32 +247,39 @@ def run(
     )
     level = _level_of(score)
 
-    # ── 结构化字段（从 LLM 输出解析，有兜底默认值）──
     top_strengths_raw: list[dict] = llm_out.get("top_strengths", []) or []
     main_gaps_raw: list[dict] = llm_out.get("main_gaps", []) or []
     hr_raw: dict = llm_out.get("hr_screening", {}) or {}
     career_raw: dict = llm_out.get("career_alignment", {}) or {}
+    transferable_raw: list[str] = llm_out.get("transferable_strengths", []) or []
+    core_req_raw: list[str] = llm_out.get("core_job_requirements", []) or []
+    research_summary: list[str] = llm_out.get("research_summary", []) or []
 
-    # 从 LLM 输出构建结构化字段（有限量兜底）
-    top_strengths: list[StrengthItem] = [
+    top_strengths = [
         StrengthItem(
-            title=s.get("title", ""),
-            resume_evidence=s.get("resume_evidence", ""),
-            job_relevance=s.get("job_relevance", ""),
+            title=item.get("title", ""),
+            resume_evidence=item.get("resume_evidence", ""),
+            job_relevance=item.get("job_relevance", ""),
         )
-        for s in (top_strengths_raw or [])
-    ][:3]  # 最多 3 条
-
-    main_gaps: list[GapItem] = [
+        for item in top_strengths_raw
+        if item
+    ][:3]
+    main_gaps = [
         GapItem(
-            title=g.get("title", ""),
-            severity=g.get("severity", "major"),
-            impact=g.get("impact", ""),
-            short_term_fixable=bool(g.get("short_term_fixable", False)),
-            action=g.get("action", ""),
+            title=item.get("title", ""),
+            severity=item.get("severity", "major"),
+            impact=item.get("impact", ""),
+            short_term_fixable=bool(item.get("short_term_fixable", False)),
+            action=item.get("action", ""),
         )
-        for g in (main_gaps_raw or [])
-    ][:3]  # 最多 3 条
+        for item in main_gaps_raw
+        if item
+    ][:3]
+
+    if not top_strengths:
+        top_strengths = _fallback_top_strengths(skill_evidence, transferable_raw)
+    if not main_gaps:
+        main_gaps = _fallback_main_gaps(skill_evidence)
 
     career_alignment = CareerAlignment(
         score=_clamp_score(career_raw.get("score", 50)),
@@ -295,21 +291,19 @@ def run(
     )
     confidence = _clamp_score(llm_out.get("confidence", 70))
 
-    # ── 硬条件判断（从上游 hard_conditions 参数或 precheck 结果构建）──
     hard_fail = False
     hard_items: list[HardConditionItem] = []
     if hard_conditions:
-        for hc in hard_conditions:
-            name = hc.get("name", "")
-            status = hc.get("status", "unknown")
+        for item in hard_conditions:
+            status = item.get("status", "unknown")
             if status == "fail":
                 hard_fail = True
             hard_items.append(
                 HardConditionItem(
-                    name=name,
+                    name=item.get("name", ""),
                     status=status,
-                    resume_evidence=hc.get("resume_evidence", ""),
-                    job_requirement=hc.get("job_requirement", ""),
+                    resume_evidence=item.get("resume_evidence", ""),
+                    job_requirement=item.get("job_requirement", ""),
                 )
             )
     hard_condition_result = HardConditionResult(
@@ -317,62 +311,61 @@ def run(
         items=hard_items,
     )
 
-    # ── 投递决策（服务器端规则，不依赖 LLM）──
-    action = _compute_application_decision(
+    application_decision = application_policy.decide_application(
         score=score,
         hard_fail=hard_fail,
         career_score=career_alignment.score,
         role_direction_score=dims.role_direction,
-    )
-    application_decision = ApplicationDecision(
-        action=action,
-        summary=_decision_summary_of(action, score),
+        main_gaps=main_gaps,
     )
 
-    # ── 向后兼容字段（从结构化字段推导）──
-    matched_points = [s.title for s in top_strengths]
+    matched_points = [item.title for item in top_strengths][:3]
     missing_points = [
-        f"[{g.severity.upper()}] {g.title}{' — ' + g.impact if g.impact else ''}"
-        for g in main_gaps
-    ]
-    risk_notes_raw: list[str] = llm_out.get("risk_notes", []) or []
-    risk_notes = [
-        g.action for g in main_gaps if g.action
-    ] + risk_notes_raw
-    if hr_screening.likely_result == "unlikely":
-        risk_notes.insert(0, f"HR 初筛风险：{hr_screening.main_reason}")
-    risk_notes = risk_notes[:3]  # 最多 3 条
+        f"[{item.severity.upper()}] {item.title}" + (f"：{item.impact}" if item.impact else "")
+        for item in main_gaps
+    ][:3]
 
-    recommendation = _decision_summary_of(action, score)
+    risk_notes = []
+    if hr_screening.likely_result == "unlikely" and hr_screening.main_reason:
+        risk_notes.append(f"HR 初筛风险：{hr_screening.main_reason}")
+    risk_notes.extend([item.action for item in main_gaps if item.action][:3])
+    risk_notes = risk_notes[:3]
 
-    # ── 行动建议 ──
-    next_actions_raw: list[str] = llm_out.get("next_actions", []) or []
-    next_actions = (
-        [g.action for g in main_gaps if g.action and len(g.action) > 3]
-        + next_actions_raw
-    )[:3]
+    next_actions = []
+    next_actions.extend([item.action for item in main_gaps if item.action])
+    if application_decision.action == "priority_apply":
+        next_actions.append("优先把最相关项目排在简历前半段，并尽快投递。")
+    elif application_decision.action == "selective_apply":
+        next_actions.append("先补齐最关键的证据再投，避免直接裸投。")
+    elif application_decision.action == "skip":
+        next_actions.append("把时间优先投入到方向更一致的岗位。")
+    next_actions = list(dict.fromkeys(action for action in next_actions if action))[:3]
 
-    transferable_raw: list[str] = llm_out.get("transferable_strengths", []) or []
-    core_req_raw: list[str] = llm_out.get("core_job_requirements", []) or []
+    transferable_strengths = transferable_raw or [
+        item.skill for item in skill_evidence if item.bucket in {"partial", "transferable"}
+    ][:3]
+
+    core_job_requirements = core_req_raw or _fallback_requirement_summary(job)
 
     return MatchResultModel(
         score=score,
         level=level,
         dimensions=dims,
-        # 旧字段（向后兼容）
         matched_points=matched_points,
         missing_points=missing_points,
-        recommendation=recommendation,
+        recommendation=application_decision.summary,
         risk_notes=risk_notes,
-        # 新结构化字段
-        core_job_requirements=core_req_raw,
+        core_job_requirements=core_job_requirements,
         hard_condition_result=hard_condition_result,
+        skill_evidence=skill_evidence,
+        skill_evidence_summary=skill_summary,
         top_strengths=top_strengths,
         main_gaps=main_gaps,
-        transferable_strengths=transferable_raw,
+        transferable_strengths=transferable_strengths,
         hr_screening=hr_screening,
         career_alignment=career_alignment,
         application_decision=application_decision,
         next_actions=next_actions,
         confidence=confidence,
+        research_summary=research_summary[:6],
     )

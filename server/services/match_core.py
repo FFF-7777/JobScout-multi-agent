@@ -11,7 +11,7 @@ from models import Job, JobAnalysis, MatchResult, Resume
 from schemas.job import JobProfile
 from schemas.match import MatchResultModel
 from schemas.resume import ResumeProfile
-from services import match_agent
+from services import match_agent, research_router, web_research_service
 from services.precheck import precheck_job
 
 
@@ -64,6 +64,15 @@ def run_single_match(
         else settings.llm_reasoning_model or settings.llm_model
     )
     model_role = "fast" if tier == "quick" else "reasoning"
+    research_plan = research_router.build_research_plan(
+        job_profile,
+        tier=tier,
+        analyze_mode=analyze_mode,
+    )
+    research_context = web_research_service.fetch_research_context(
+        job_profile,
+        plan=research_plan,
+    )
 
     # 简历原文也作为匹配主输入参与所有档位分析，减少仅靠结构化画像带来的细节丢失。
     # tier / resume_text_hash / policy_version 一并纳入缓存键，避免不同档位或不同原文版本串缓存。
@@ -85,10 +94,12 @@ def run_single_match(
         prompt_version,
         tier=tier,
         resume_text_hash=resume_text_hash,
+        research_hash=research_context.hash,
         policy_version=match_agent.MATCH_POLICY_VERSION,
     )
 
-    # 纭潯浠堕绛涳紙瑙勫垯锛屼笉娑堣€?LLM锛?    pre = precheck_job(resume, job_profile)
+    # 硬条件预筛（规则层，不消耗 LLM）。
+    pre = precheck_job(resume, job_profile)
     hard_items: list[dict] = pre.get("items", [])
     if not pre["passed"]:
         return MatchOutcome(
@@ -119,7 +130,12 @@ def run_single_match(
 
     try:
         match = match_agent.run(
-            resume, job_profile, resume_text=resume_text, model_role=model_role, hard_conditions=hard_items,
+            resume,
+            job_profile,
+            resume_text=resume_text,
+            research_context=research_context.model_dump(),
+            model_role=model_role,
+            hard_conditions=hard_items,
         )
     except Exception as e:  # noqa: BLE001
         return MatchOutcome(None, key, False, str(e), False)

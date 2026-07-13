@@ -1,7 +1,4 @@
-"""匹配相关 Pydantic 模型。
-
-v3 扩展（2026-07-13）：结构化硬条件、核心优势/缺口、HR 初筛判断、职业方向、投递决策。
-"""
+"""匹配相关 Pydantic 模型。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -10,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class DimensionScores(BaseModel):
-    """五维度得分（0-100），由 LLM + 规则给出。"""
+    """五个核心维度的评分（0-100）。"""
 
     tech_stack: float = Field(0.0, ge=0, le=100)
     project_exp: float = Field(0.0, ge=0, le=100)
@@ -29,6 +26,26 @@ class HardConditionItem(BaseModel):
 class HardConditionResult(BaseModel):
     status: str = "unknown"  # pass / partial / fail / unknown
     items: list[HardConditionItem] = Field(default_factory=list)
+
+
+class SkillEvidenceItem(BaseModel):
+    """岗位技能要求与简历证据之间的单条映射。"""
+
+    skill: str = ""
+    source: str = "required"  # required / preferred
+    bucket: str = "not_shown"  # confirmed / partial / transferable / not_shown
+    job_requirement: str = ""
+    resume_evidence: str = ""
+    note: str = ""
+
+
+class SkillEvidenceSummary(BaseModel):
+    required_total: int = 0
+    preferred_total: int = 0
+    confirmed_count: int = 0
+    partial_count: int = 0
+    transferable_count: int = 0
+    not_shown_count: int = 0
 
 
 class StrengthItem(BaseModel):
@@ -58,25 +75,26 @@ class CareerAlignment(BaseModel):
 class ApplicationDecision(BaseModel):
     action: str = "apply"  # priority_apply / apply / selective_apply / skip
     summary: str = ""
+    reasons: list[str] = Field(default_factory=list)
     exception: str = ""
 
 
 class MatchResultModel(BaseModel):
-    """Match Agent 的结构化输出（v3 扩展）。"""
+    """Match Agent 的结构化输出。"""
 
     score: float = Field(0.0, ge=0, le=100)
     level: str = "D"
     dimensions: DimensionScores = Field(default_factory=DimensionScores)
 
-    # ── 旧字段（向后兼容，由 LLM 直接输出）──
     matched_points: list[str] = Field(default_factory=list)
     missing_points: list[str] = Field(default_factory=list)
     recommendation: str = ""
     risk_notes: list[str] = Field(default_factory=list)
 
-    # ── 新结构化字段（v3）──
     core_job_requirements: list[str] = Field(default_factory=list)
     hard_condition_result: HardConditionResult = Field(default_factory=HardConditionResult)
+    skill_evidence: list[SkillEvidenceItem] = Field(default_factory=list)
+    skill_evidence_summary: SkillEvidenceSummary = Field(default_factory=SkillEvidenceSummary)
     top_strengths: list[StrengthItem] = Field(default_factory=list)
     main_gaps: list[GapItem] = Field(default_factory=list)
     transferable_strengths: list[str] = Field(default_factory=list)
@@ -85,6 +103,7 @@ class MatchResultModel(BaseModel):
     application_decision: ApplicationDecision = Field(default_factory=ApplicationDecision)
     next_actions: list[str] = Field(default_factory=list)
     confidence: float = Field(0.0, ge=0, le=100)
+    research_summary: list[str] = Field(default_factory=list)
 
 
 class MatchRunRequest(BaseModel):

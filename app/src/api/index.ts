@@ -23,6 +23,17 @@ export interface Resume {
   raw_text: string;
   profile_json: ResumeProfile | null;
 }
+export interface ResumeImageImportFailed {
+  filename: string;
+  error: string;
+}
+export interface ResumeImageImportResult {
+  resume: Resume;
+  total: number;
+  success: number;
+  provider: string;
+  failed: ResumeImageImportFailed[];
+}
 export interface JobProfile {
   company_name: string;
   job_title: string;
@@ -76,11 +87,24 @@ export interface AgentRun {
   completed_items: number;
   failed_items: number;
   in_flight_items: { job_id: number; job_title: string }[] | null;
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 export interface WorkflowTask {
   task_id: string;
   status: string;
   steps: AgentRun[];
+}
+export interface AgentRuntimeMeta {
+  job_agent_concurrency: number;
+  match_agent_concurrency: number;
+  report_agent_concurrency: number;
+  match_two_tier: boolean;
+  assumptions: {
+    quick_seconds_per_job: number;
+    deep_seconds_per_job: number;
+    report_overhead_seconds: number;
+  };
 }
 export interface MatchResult {
   id: number;
@@ -167,10 +191,21 @@ export interface HealthInfo {
   llm_timeout?: number;
   agents: AgentHealth[];
 }
+export interface LLMTestItem {
+  name: string;
+  ok: boolean;
+  model: string;
+  provider?: string;
+  reply: string;
+}
+export interface LLMTestResult {
+  ok: boolean;
+  results: LLMTestItem[];
+}
 
 export const api = {
   health: () => http.get<HealthInfo>("/health").then((r) => r.data),
-  testLLM: () => http.post("/api/test-llm").then((r) => r.data),
+  testLLM: () => http.post<LLMTestResult>("/api/test-llm").then((r) => r.data),
 
   parseResumeText: (text: string, filename = "pasted.txt") =>
     http.post<Resume>("/api/resumes/parse", { text, filename }).then((r) => r.data),
@@ -185,6 +220,13 @@ export const api = {
           }
         },
       })
+      .then((r) => r.data);
+  },
+  importResumeImages: (files: File[]) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    return http
+      .post<ResumeImageImportResult>("/api/resumes/import-images", fd)
       .then((r) => r.data);
   },
   parseExistingResume: (id: number) =>
@@ -237,6 +279,8 @@ export const api = {
 
   runAgents: (resume_id: number, job_ids: number[]) =>
     http.post<WorkflowTask>("/api/agents/run", { resume_id, job_ids }).then((r) => r.data),
+  getAgentRuntimeMeta: () =>
+    http.get<AgentRuntimeMeta>("/api/agents/runtime-meta").then((r) => r.data),
   getTask: (task_id: string) =>
     http.get<WorkflowTask>(`/api/agents/tasks/${task_id}`).then((r) => r.data),
   abortTask: (task_id: string) =>

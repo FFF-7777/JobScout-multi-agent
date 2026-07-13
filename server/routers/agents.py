@@ -15,6 +15,22 @@ from services import workflow
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 
+@router.get("/runtime-meta")
+def get_runtime_meta():
+    settings = get_settings()
+    return {
+        "job_agent_concurrency": settings.job_agent_concurrency,
+        "match_agent_concurrency": settings.match_agent_concurrency,
+        "report_agent_concurrency": settings.report_agent_concurrency,
+        "match_two_tier": settings.match_two_tier,
+        "assumptions": {
+            "quick_seconds_per_job": 20,
+            "deep_seconds_per_job": 90,
+            "report_overhead_seconds": 5,
+        },
+    }
+
+
 @router.post("/run", response_model=WorkflowTaskOut)
 def run_agents(
     req: WorkflowRunRequest,

@@ -17,6 +17,9 @@ const jdText = ref("");
 const splitBatch = ref(false);
 const jobUrl = ref("");
 const loading = ref(false);
+const urlImporting = ref(false);
+const urlImportState = ref<"idle" | "loading" | "success" | "error">("idle");
+const urlImportMessage = ref("");
 const jobs = ref<Job[]>([]);
 const selectedIds = ref<number[]>([]);
 // 行级 loading：行 ID -> 是否在解析
@@ -127,16 +130,23 @@ async function importUrl() {
     ElMessage.warning("请输入岗位链接");
     return;
   }
-  loading.value = true;
+  urlImporting.value = true;
+  urlImportState.value = "loading";
+  urlImportMessage.value = "正在抓取链接内容并创建岗位，请稍候…";
   try {
     await api.importJobUrl(url);
     jobUrl.value = "";
+    urlImportState.value = "success";
+    urlImportMessage.value = "链接导入成功，岗位已加入列表，并正在后台自动解析。";
     await refreshAndWatch();
     ElMessage.success("链接岗位已导入，正在后台自动解析");
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || "链接导入失败");
+    const detail = e?.response?.data?.detail || "链接导入失败";
+    urlImportState.value = "error";
+    urlImportMessage.value = detail;
+    ElMessage.error(detail);
   } finally {
-    loading.value = false;
+    urlImporting.value = false;
   }
 }
 
@@ -391,7 +401,7 @@ function startAnalyze() {
     ElMessage.warning("请先导入岗位");
     return;
   }
-  router.push("/run");
+  router.push({ path: "/run", query: { autostart: "1", from: "jobs" } });
 }
 </script>
 
@@ -442,7 +452,10 @@ function startAnalyze() {
 
       <!-- 待导入图片预览条：单张右上角 × 按钮 / 一键清空 -->
       <div v-if="pendingImageFiles.length" class="image-preview-bar">
-        <div class="preview-label">待导入图片（{{ pendingImageFiles.length }}）：</div>
+        <div class="preview-head">
+          <div class="preview-label">待导入图片（{{ pendingImageFiles.length }}）：</div>
+          <div class="preview-limit">单次最多 20 张</div>
+        </div>
         <div class="preview-list">
           <div v-for="(url, idx) in pendingImagePreviews" :key="idx" class="preview-item">
             <img :src="url" :alt="pendingImageFiles[idx]?.name" />
@@ -457,8 +470,22 @@ function startAnalyze() {
       </div>
 
       <div class="url-row">
-        <el-input v-model="jobUrl" placeholder="仅支持智联招聘职位链接；BOSS / 拉勾 / 猎聘 / 51job 请改用粘贴 JD 或截图 OCR" />
-        <el-button :loading="loading" @click="importUrl">通过链接导入</el-button>
+        <el-input
+          v-model="jobUrl"
+          :disabled="urlImporting"
+          placeholder="仅支持智联招聘职位链接；BOSS / 拉勾 / 猎聘 / 51job 请改用粘贴 JD 或截图 OCR"
+        />
+        <el-button class="url-import-btn" :loading="urlImporting" :disabled="urlImporting" @click="importUrl">
+          通过链接导入
+        </el-button>
+      </div>
+      <div
+        v-if="urlImportState !== 'idle' && urlImportMessage"
+        class="url-import-feedback"
+        :class="`is-${urlImportState}`"
+        :title="urlImportMessage"
+      >
+        {{ urlImportMessage }}
       </div>
       <div class="url-help">
         当前仅稳定支持智联招聘链接导入。BOSS直聘、拉勾、猎聘、51job 常受验证码、登录态或反爬限制影响，建议直接粘贴 JD 或使用截图 OCR 导入。
@@ -469,7 +496,9 @@ function startAnalyze() {
       <div class="toolbar">
         <div class="section-h" style="margin: 0">待分析岗位（{{ jobs.length }}）</div>
         <div class="toolbar-right">
-          <span v-if="hasSelected" class="sel-hint">已选 {{ selectedCount }} 个</span>
+          <span :class="['sel-hint', { active: hasSelected }]">
+            {{ hasSelected ? `已选 ${selectedCount} 个，可直接开始分析` : "请选择岗位后开始分析" }}
+          </span>
           <el-select
             :model-value="bulkMode"
             size="default"
@@ -495,9 +524,10 @@ function startAnalyze() {
           </el-button>
           <el-button
             :type="hasSelected ? 'primary' : 'plain'"
+            :class="['start-analyze-btn', { active: hasSelected }]"
             @click="startAnalyze"
           >
-            {{ hasSelected ? `开始分析 (${selectedCount}) →` : "开始分析 →" }}
+            {{ hasSelected ? `开始分析（${selectedCount}）→` : "开始分析 →" }}
           </el-button>
         </div>
         <div v-if="fullModeCount > 0" class="mode-hint">
@@ -630,12 +660,58 @@ function startAnalyze() {
 .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 .sel-hint {
-  color: #3a6ff7;
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(160, 176, 204, 0.42);
+  color: #7a8599;
   font-size: 13px;
   font-weight: 600;
+  transition: all 0.25s ease;
+}
+.sel-hint.active {
+  color: #285ae6;
+  background: linear-gradient(135deg, rgba(83, 133, 255, 0.16), rgba(122, 167, 255, 0.24));
+  border-color: rgba(89, 135, 255, 0.34);
+  box-shadow: 0 10px 24px rgba(83, 122, 255, 0.14);
+}
+.start-analyze-btn {
+  min-width: 146px;
+  font-weight: 700;
+  transition: all 0.22s ease;
+}
+.start-analyze-btn.active {
+  border: 1px solid rgba(76, 123, 255, 0.95);
+  background: linear-gradient(135deg, #6ea8ff 0%, #5f86ff 42%, #6a63ff 100%) !important;
+  box-shadow:
+    0 12px 30px rgba(90, 115, 255, 0.28),
+    0 0 0 4px rgba(111, 152, 255, 0.16);
+  transform: translateY(-1px);
+  animation: ctaPulse 1.8s ease-in-out infinite;
+}
+.start-analyze-btn.active:hover {
+  transform: translateY(-2px) scale(1.01);
+  box-shadow:
+    0 16px 34px rgba(90, 115, 255, 0.34),
+    0 0 0 6px rgba(111, 152, 255, 0.18);
+}
+@keyframes ctaPulse {
+  0%, 100% {
+    box-shadow:
+      0 12px 30px rgba(90, 115, 255, 0.28),
+      0 0 0 4px rgba(111, 152, 255, 0.16);
+  }
+  50% {
+    box-shadow:
+      0 14px 34px rgba(90, 115, 255, 0.36),
+      0 0 0 8px rgba(111, 152, 255, 0.12);
+  }
 }
 .mode-hint {
   color: #b88218;
@@ -658,6 +734,32 @@ function startAnalyze() {
   color: #8a94a6;
   font-size: 12px;
   line-height: 1.7;
+}
+.url-import-feedback {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(167, 181, 210, 0.24);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.url-import-feedback.is-loading {
+  color: #285ae6;
+  background: rgba(235, 242, 255, 0.88);
+  border-color: rgba(98, 136, 244, 0.28);
+}
+.url-import-feedback.is-success {
+  color: #257045;
+  background: rgba(235, 248, 235, 0.88);
+  border-color: rgba(125, 199, 131, 0.3);
+}
+.url-import-feedback.is-error {
+  color: #b34545;
+  background: rgba(255, 238, 238, 0.92);
+  border-color: rgba(235, 138, 138, 0.3);
 }
 .jd-prev {
   color: #2c3340;
@@ -735,6 +837,9 @@ function startAnalyze() {
 .url-row .el-input {
   flex: 1;
 }
+.url-import-btn {
+  min-width: 146px;
+}
 
 /* === 待导入图片预览条 === */
 .image-preview-bar {
@@ -747,8 +852,19 @@ function startAnalyze() {
 .preview-label {
   font-size: 13px;
   color: #5b667a;
-  margin-bottom: 8px;
   font-weight: 500;
+}
+.preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.preview-limit {
+  color: #8a94a6;
+  font-size: 12px;
 }
 .preview-list {
   display: flex;

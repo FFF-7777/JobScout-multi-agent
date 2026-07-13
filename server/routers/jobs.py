@@ -22,7 +22,7 @@ from schemas.job import (
     ImportImageFailed,
 )
 from services import baidu_ocr, document_parser, job_agent, url_fetcher
-from services.jd_preprocessor import clean_ocr_jd
+from services.jd_preprocessor import clean_ocr_jd, clean_web_jd
 from services.job_parse_queue import enqueue_parse
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def _get_ocr_service():
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
-_SUPPORTED_IMPORT_HOSTS = {"zhaopin.com", "www.zhaopin.com"}
+_SUPPORTED_IMPORT_HOSTS = {"zhaopin.com", "www.zhaopin.com", "m.zhaopin.com"}
 _GUIDED_IMPORT_HOSTS = {
     "zhipin.com": "BOSS直聘",
     "www.zhipin.com": "BOSS直聘",
@@ -190,7 +190,7 @@ def import_url(req: JobImportUrlRequest, db: Session = Depends(get_db)):
         raise HTTPException(400, "链接为空")
     _validate_import_url_host(url)
     try:
-        jd_text = url_fetcher.fetch(url)
+        jd_text = url_fetcher.fetch(url, allowed_hosts=_SUPPORTED_IMPORT_HOSTS)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     if not jd_text.strip():
@@ -345,6 +345,8 @@ def _apply_analysis(job: Job, profile, db: Session) -> None:
     # OCR 来源：保留清洗后正文
     if job.source == "ocr_image":
         job.cleaned_jd_text = clean_ocr_jd(job.jd_text)
+    elif job.source == "url":
+        job.cleaned_jd_text = clean_web_jd(job.jd_text)
     else:
         job.cleaned_jd_text = job.cleaned_jd_text or job.jd_text
     # 所有字段写入成功后，最终标记 success

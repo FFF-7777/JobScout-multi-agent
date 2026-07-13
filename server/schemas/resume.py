@@ -45,3 +45,16 @@ class ResumeOut(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     profile_json: ResumeProfile
+
+
+class ResumeImportImageFailed(BaseModel):
+    filename: str
+    error: str
+
+
+class ResumeImportImagesResult(BaseModel):
+    resume: ResumeOut
+    total: int
+    success: int
+    provider: str
+    failed: list[ResumeImportImageFailed] = Field(default_factory=list)

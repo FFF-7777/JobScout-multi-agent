@@ -28,6 +28,7 @@ from schemas.job import JobImportUrlRequest
 from schemas.match import ApplicationDecision, CareerAlignment, GapItem, HrScreening, StrengthItem
 from schemas.report import JobReport
 from services import job_parse_queue, report_agent, workflow
+from services import url_fetcher
 
 
 class WorkflowRegressionTests(unittest.TestCase):
@@ -316,6 +317,19 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertIn("截图 OCR", ctx.exception.detail)
         self.assertEqual(db.query(Job).count(), 0)
         db.close()
+
+    def test_url_fetcher_allows_explicit_whitelist_host_even_if_dns_is_reserved(self):
+        with patch.object(
+            url_fetcher.socket,
+            "getaddrinfo",
+            return_value=[(None, None, None, None, ("198.18.0.196", 0))],
+        ):
+            out = url_fetcher._validate(
+                "https://www.zhaopin.com/jobdetail/example.htm",
+                allowed_hosts={"www.zhaopin.com", "zhaopin.com", "m.zhaopin.com"},
+            )
+
+        self.assertEqual(out, "https://www.zhaopin.com/jobdetail/example.htm")
 
     def test_unexpected_workflow_error_marks_unfinished_steps_failed(self):
         captured = []

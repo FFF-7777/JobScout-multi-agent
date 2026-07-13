@@ -25,7 +25,56 @@ NOISE_LINES = {
     "投递",
     "已投递",
     "求职者",
+    "立即申请",
+    "收藏职位",
+    "举报职位",
+    "取消",
+    "职位举报",
 }
+
+WEB_CUTOFF_MARKERS = (
+    "认证资质",
+    "营业执照信息",
+    "为您推荐更多相似职位",
+    "查看更多相似职位",
+    "周边城市",
+    "最新招聘",
+    "热门城市",
+    "热门职位",
+    "热门公司",
+)
+
+WEB_NOISE_LINE_PATTERNS = (
+    r"^立即申请$",
+    r"^收藏职位$",
+    r"^举报职位$",
+    r"^取消$",
+    r"^查看更多相似职位$",
+)
+
+_COMPANY_ROLE_SEP_RE = re.compile(r"^(?P<company>[^·•]{2,40})[·•](?P<role>.+)$")
+_SALARY_RE = re.compile(r"(?P<salary>\d{2,4}\s*[-~～]\s*\d{2,4}\s*元\s*/?\s*[天月])")
+_INTERNSHIP_RE = re.compile(r"(?P<days>\d+)\s*天/周\s*(?P<duration>\d+)\s*个?月")
+_EDUCATION_RE = re.compile(r"(大专|本科|硕士|博士|学历不限)")
+_ACTIVE_RE = re.compile(r"(刚刚|今日|本周内|近[0-9一二三四五六七八九十]+天|[0-9一二三四五六七八九十]+月内)活跃")
+_COMPANY_ROLE_HINTS = (
+    "招聘者",
+    "hr",
+    "hrbp",
+    "猎头",
+    "经理",
+    "总监",
+    "主管",
+    "负责人",
+    "面试官",
+    "创始人",
+    "技术",
+    "开发",
+    "人力",
+    "行政",
+    "产品",
+    "运营",
+)
 
 
 def clean_ocr_jd(raw_text: str) -> str:
@@ -87,6 +136,104 @@ def clean_ocr_jd(raw_text: str) -> str:
 
     # 6) 压缩多余空行
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def clean_web_jd(raw_text: str) -> str:
+    """清洗链接抓取的 JD 文本。
+
+    目标：
+    - 保留岗位标题 / 薪资 / 公司 / 城市 / 职责 / 要求等正文事实
+    - 截断智联等招聘站页面尾部的推荐职位、热门城市、热门公司等模板噪声
+    - 删除页面交互按钮类文本，减少对公司名、薪资、岗位名的污染
+    """
+    text = (raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+
+    # 1) 尽量把常见板块标题恢复成单独行，便于后续规则截断与下游 LLM 理解
+    text = re.sub(
+        r"(工作地址|职位描述|岗位职责[:：]?|任职要求[:：]?|岗位要求[:：]?|职位福利|认证资质|营业执照信息|为您推荐更多相似职位|查看更多相似职位|周边城市|最新招聘|热门城市|热门职位|热门公司)",
+        r"\n\1\n",
+        text,
+    )
+
+    # 2) 清理多余空白
+    text = re.sub(r"[ \t\u3000]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # 3) 逐行清洗，并在强噪声区块起点处直接截断
+    cleaned_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line in NOISE_LINES:
+            continue
+        if any(marker in line for marker in WEB_CUTOFF_MARKERS):
+            break
+        if any(re.search(pattern, line) for pattern in WEB_NOISE_LINE_PATTERNS):
+            continue
+        cleaned_lines.append(line)
+
+    text = "\n".join(cleaned_lines)
+
+    # 4) 压缩尾部常见站点免责声明后面的残留空行
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def extract_ocr_job_hints(raw_text: str) -> dict[str, str]:
+    """从 OCR JD 原文中用规则提取高确定性字段，给下游 LLM 做 hints。"""
+    text = (raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    hints: dict[str, str] = {}
+
+    if lines:
+        first = lines[0]
+        if 2 <= len(first) <= 40 and not _SALARY_RE.search(first) and "职位描述" not in first:
+            hints["job_title"] = first
+
+    for line in lines[:8]:
+        if not hints.get("salary"):
+            m = _SALARY_RE.search(line)
+            if m:
+                hints["salary"] = re.sub(r"\s+", "", m.group("salary"))
+        if not hints.get("education"):
+            m = _EDUCATION_RE.search(line)
+            if m:
+                hints["education"] = m.group(1)
+        if not hints.get("internship_duration"):
+            m = _INTERNSHIP_RE.search(line)
+            if m:
+                hints["internship_duration"] = f"{m.group('duration')}个月"
+                hints["internship_days_per_week"] = m.group("days")
+
+    city_idx = next((i for i, line in enumerate(lines[:10]) if line == "深圳"), None)
+    if city_idx is not None:
+        hints["city"] = lines[city_idx]
+    else:
+        for line in lines[:10]:
+            if line in {"北京", "上海", "广州", "深圳", "杭州", "成都", "武汉", "西安", "南京", "苏州"}:
+                hints["city"] = line
+                break
+
+    for line in reversed(lines[-8:]):
+        if _ACTIVE_RE.search(line):
+            continue
+        if "与BOSS随时沟通" in line or "去App" in line or line in NOISE_LINES:
+            continue
+        match = _COMPANY_ROLE_SEP_RE.match(line)
+        if not match:
+            continue
+        company = match.group("company").strip()
+        role = match.group("role").strip().lower()
+        if not company or len(company) < 2:
+            continue
+        if any(token in role for token in _COMPANY_ROLE_HINTS):
+            hints["company_name"] = company
+            break
+
+    return hints
 
 
 def build_jd_preview(profile, max_length: int = 160) -> str:

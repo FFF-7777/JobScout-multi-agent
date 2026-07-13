@@ -111,21 +111,33 @@ def _validate_host(host: str) -> None:
             raise ValueError(f"主机 {host} 解析到禁止地址：{e}") from e
 
 
-def _validate(url: str) -> str:
+def _normalize_allowed_hosts(allowed_hosts: set[str] | None) -> set[str] | None:
+    if not allowed_hosts:
+        return None
+    return {host.strip().lower() for host in allowed_hosts if host and host.strip()}
+
+
+def _validate(url: str, allowed_hosts: set[str] | None = None) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in _ALLOWED_SCHEMES:
         raise ValueError("仅支持 HTTP/HTTPS 链接")
-    _validate_host(parsed.hostname)
+    host = (parsed.hostname or "").strip().lower()
+    normalized_hosts = _normalize_allowed_hosts(allowed_hosts)
+    if normalized_hosts is not None:
+        if host not in normalized_hosts:
+            raise ValueError("链接域名不在允许列表内")
+        return url
+    _validate_host(host)
     return url
 
 
-def fetch(url: str, _depth: int = 0) -> str:
+def fetch(url: str, _depth: int = 0, allowed_hosts: set[str] | None = None) -> str:
     """抓取链接并返回正文文本。失败时抛出 ValueError。
 
     不启用 httpx 的 follow_redirects：遇到 3xx 时手动取出 Location，
     重新走 _validate 校验后再递归抓取，杜绝重定向绕过 SSRF 防护。
     """
-    url = _validate(url)
+    url = _validate(url, allowed_hosts=allowed_hosts)
     if _depth > _MAX_REDIRECTS:
         raise ValueError("重定向次数过多，已中止抓取")
 
@@ -139,7 +151,7 @@ def fetch(url: str, _depth: int = 0) -> str:
                     loc = r.headers.get("location")
                     if not loc:
                         raise ValueError("收到重定向但缺少 Location 头")
-                    return fetch(urljoin(url, loc), _depth + 1)
+                    return fetch(urljoin(url, loc), _depth + 1, allowed_hosts=allowed_hosts)
                 r.raise_for_status()
                 chunks: list[str] = []
                 total = 0

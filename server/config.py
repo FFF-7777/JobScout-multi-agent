@@ -1,4 +1,4 @@
-"""全局配置：从 .env 读取 LLM 与数据库设置。"""
+"""全局配置：从 .env 读取 LLM、OCR 与数据库配置。"""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -11,33 +11,50 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # 阿里云百炼（通义千问）OpenAI 兼容端点
+    # 兼容旧配置：默认仍以 DashScope 为主；新配置可直接使用 LLM_API_KEY / LLM_PROVIDER / LLM_BASE_URL
     dashscope_api_key: str = ""
+    llm_provider: str = "dashscope"
+    llm_api_key: str = ""
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     llm_model: str = "qwen-plus"
     llm_timeout: int = 120
     llm_temperature: float = 0.2
 
-    # ── 模型档位：按任务难度分配，而非按 Agent 绑定厂商 ──
-    # 设计原则：同一个主厂商（dashscope）支撑多个 Agent；
-    # 简单提取任务用快速低成本模型，关键匹配任务用较强推理模型。
-    # 留空则回退到 llm_model。跨厂商兜底（LLM_FALLBACK_*）为可选，
-    # 目前复用同一个 OpenAI 兼容 client，仅在主模型持续失败时重试一次。
-    llm_fast_model: str = ""         # Resume / Job / Match(quick)：快速低成本
-    llm_reasoning_model: str = ""    # Match(deep)：强推理，开启思考模式
-    llm_vision_model: str = ""       # 多模态兜底（预留，当前未启用）
-    llm_report_model: str = ""       # Report Agent：慎用思考影响 JSON 输出
-    llm_ocr_model: str = ""          # OCR 文字识别（如 qwen3.5-ocr）
-    llm_fallback_model: str = ""     # 失败兜底（可选第二厂商）
-    # ── 思考模式开关 ──
-    llm_fast_enable_thinking: bool = False      # Resume / Job / Match(quick)
-    llm_reasoning_enable_thinking: bool = True  # Match(deep)
-    llm_report_enable_thinking: bool = False    # Report Agent
-    # 预留厂商字段：当前仅 dashscope 已接线，跨厂商切换为后续可选扩展点
-    llm_fast_provider: str = "dashscope"
-    llm_reasoning_provider: str = "dashscope"
-    llm_vision_provider: str = "dashscope"
-    llm_fallback_provider: str = "dashscope"
+    # 各模型档位：允许分别接入不同厂商、不同 Base URL、不同 API Key
+    llm_fast_model: str = ""
+    llm_fast_provider: str = ""
+    llm_fast_base_url: str = ""
+    llm_fast_api_key: str = ""
+
+    llm_reasoning_model: str = ""
+    llm_reasoning_provider: str = ""
+    llm_reasoning_base_url: str = ""
+    llm_reasoning_api_key: str = ""
+
+    llm_report_model: str = ""
+    llm_report_provider: str = ""
+    llm_report_base_url: str = ""
+    llm_report_api_key: str = ""
+
+    llm_vision_model: str = ""
+    llm_vision_provider: str = ""
+    llm_vision_base_url: str = ""
+    llm_vision_api_key: str = ""
+
+    llm_ocr_model: str = ""
+    llm_ocr_provider: str = ""
+    llm_ocr_base_url: str = ""
+    llm_ocr_api_key: str = ""
+
+    llm_fallback_model: str = ""
+    llm_fallback_provider: str = ""
+    llm_fallback_base_url: str = ""
+    llm_fallback_api_key: str = ""
+
+    # 思考模式开关
+    llm_fast_enable_thinking: bool = False
+    llm_reasoning_enable_thinking: bool = True
+    llm_report_enable_thinking: bool = False
 
     # 数据库
     database_url: str = "sqlite:///./internscout.db"
@@ -45,51 +62,73 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "*"
 
-    # 工作流各 Agent 节点内并发调用 LLM 的上限（分开配置，避免盲目统一调高触发限流）
-    # 设太高容易触发厂商限流 / 排队；从以下保守值起步，记录真实耗时与 429 再逐步调整。
-    # 历史档（llm_concurrency）保留作兜底，新代码优先用下面的分项值。
+    # 并发
     llm_concurrency: int = 3
-    job_agent_concurrency: int = 6     # Job Agent：输入输出短，可稍高
-    match_agent_concurrency: int = 4   # Match Agent：强模型、输入大，保守
-    report_agent_concurrency: int = 6  # Report Agent：快速模型、输入精简后可稍高
+    job_agent_concurrency: int = 6
+    match_agent_concurrency: int = 4
+    report_agent_concurrency: int = 6
 
-    # 单次任务中「深度分析（full，额外结合简历原文）」岗位数上限。
-    # 0 表示不限制；历史默认值 10 用于降低 LLM 成本与耗时，用户可按需调大。
-    # 仅在工作流启动时校验选中集合，不限制数据库里 full 总数。
+    # 深度分析岗位数上限
     full_mode_limit: int = 0
 
-    # 报告自动生成策略：
-    #   top_k -> 仅对匹配度最高的 N 个岗位生成（默认，避免为全部岗位消耗 LLM）
-    #   none  -> 不自动生成，全部按需
-    #   all   -> 为所有岗位生成（不推荐，耗时长）
-    # 自动生成的报告默认用「基础报告」（代码模板，立即生成，无 LLM 调用）；
-    # 深度 AI 报告通过 POST /api/reports/generate-batch 按需触发（mode=deep）。
+    # 报告自动生成策略
     report_auto_policy: str = "top_k"
     report_auto_top_k: int = 5
-
-    # 历史报告保留数量上限（按创建时间降序，超出最旧的自动删除）
     report_history_limit: int = 100
 
-    # 匹配两档策略（P1#7）：全量岗位先用「快速模型」出分排序（省 LLM 成本），
-    # 仅匹配度最高的 N 个岗位再用「推理模型」做深度匹配。
-    # 关闭（False）则全部岗位都用推理模型（旧行为）。
+    # 两段式匹配
     match_two_tier: bool = True
 
-    # 百度 OCR（图片导入 JD 文字识别）
+    # 百度 OCR
     baidu_ocr_app_id: str = ""
     baidu_ocr_api_key: str = ""
     baidu_ocr_secret_key: str = ""
 
-    # OCR 服务商选择：baidu / tencent（控制图片导入走哪家）
-    # 默认腾讯：免费档 10 QPS（百度仅 ~2 QPS），20 张图约 2s 而非 10s
+    # OCR 服务商
     ocr_provider: str = "tencent"
-    # 腾讯云 OCR（备选）
     tencent_ocr_secret_id: str = ""
     tencent_ocr_secret_key: str = ""
 
+    def _global_api_key(self) -> str:
+        return (self.llm_api_key or self.dashscope_api_key or "").strip()
+
+    def _slot_value(self, role: str, kind: str) -> str:
+        return (getattr(self, f"llm_{role}_{kind}", "") or "").strip()
+
+    def resolve_model(self, role: str) -> str:
+        if role == "fast":
+            return self.llm_fast_model or self.llm_model
+        if role == "reasoning":
+            return self.llm_reasoning_model or self.llm_model
+        if role == "report":
+            return self.llm_report_model or self.llm_reasoning_model or self.llm_model
+        if role == "vision":
+            return self.llm_vision_model or self.llm_model
+        if role == "ocr":
+            return self.llm_ocr_model or self.llm_model
+        if role == "fallback":
+            return self.llm_fallback_model or self.llm_model
+        return self.llm_model
+
+    def resolve_provider(self, role: str) -> str:
+        slot = self._slot_value(role, "provider")
+        return slot or self.llm_provider or "openai-compatible"
+
+    def resolve_base_url(self, role: str) -> str:
+        slot = self._slot_value(role, "base_url")
+        return slot or self.llm_base_url
+
+    def resolve_api_key(self, role: str) -> str:
+        slot = self._slot_value(role, "api_key")
+        return slot or self._global_api_key()
+
+    def role_configured(self, role: str) -> bool:
+        return bool(self.resolve_api_key(role))
+
     @property
     def has_api_key(self) -> bool:
-        return bool(self.dashscope_api_key and self.dashscope_api_key.strip())
+        roles = ("fast", "reasoning", "report", "vision", "ocr", "fallback")
+        return bool(self._global_api_key()) or any(self.role_configured(role) for role in roles)
 
 
 @lru_cache

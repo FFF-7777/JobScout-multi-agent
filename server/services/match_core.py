@@ -1,11 +1,8 @@
-"""单条岗位匹配的核心逻辑（P1#7 两档 / P2#14 重试共用）。
-
-把「加载岗位画像 → 硬条件预筛 → 缓存命中 → LLM 匹配」封装成无状态函数，
-workflow 的两阶段（quick 全量 / deep Top-K）与重试接口都调用它，避免逻辑重复、保证一致。
-"""
+﻿"""Core matching flow for a single job item."""
 from __future__ import annotations
 
 import hashlib
+
 from typing import NamedTuple
 
 from config import get_settings
@@ -27,7 +24,7 @@ class MatchOutcome(NamedTuple):
 
 
 def _load_job_profile(jid: int):
-    """加载岗位结构化画像；缺失时用 jobs 主表兜底造一个最小画像。"""
+    """Load the structured job profile, falling back to minimal job fields when missing."""
     db = SessionLocal()
     try:
         job = db.get(Job, jid)
@@ -54,18 +51,12 @@ def run_single_match(
     tier: str = "deep",
     prompt_version: str = match_agent.PROMPT_VERSION,
 ) -> MatchOutcome:
-    """对单个岗位跑一档匹配（tier=quick 用快速模型，tier=deep 用推理模型）。
-
-    - 硬条件预筛不通过 → 直接返回 0/D（hard_fail=True），不调 LLM
-    - 命中缓存 → 直接复用缓存结果（cache_hit=True），不调 LLM
-    - 否则调用 match_agent.run，返回结果 + 缓存键
-    """
+    """Run one match request for a single job. quick uses the fast model, deep uses the reasoning model."""
     settings = get_settings()
     resume = ResumeProfile.model_validate(resume_profile)
     job, job_profile = _load_job_profile(jid)
     if job is None or job_profile is None:
         return MatchOutcome(None, "", False, f"岗位 {jid} 不存在", False)
-
     analyze_mode = job.analyze_mode or "summary"
     model = (
         settings.llm_fast_model or settings.llm_model
@@ -74,18 +65,16 @@ def run_single_match(
     )
     model_role = "fast" if tier == "quick" else "reasoning"
 
-    # P0#3：先算简历原文哈希（仅 deep+full 有值），再生成缓存键。
-    # tier / resume_text_hash / policy_version 均纳入键，确保 quick 全量与 deep 深度复核
-    # 即便同模型也互不命中，避免 deep 阶段直接复用 quick 结果跳过复核。
+    # 简历原文也作为匹配主输入参与所有档位分析，减少仅靠结构化画像带来的细节丢失。
+    # tier / resume_text_hash / policy_version 一并纳入缓存键，避免不同档位或不同原文版本串缓存。
     resume_text: str | None = None
-    if tier == "deep" and analyze_mode == "full":
-        rdb = SessionLocal()
-        try:
-            rrow = rdb.get(Resume, resume_id)
-            if rrow:
-                resume_text = rrow.raw_text
-        finally:
-            rdb.close()
+    rdb = SessionLocal()
+    try:
+        rrow = rdb.get(Resume, resume_id)
+        if rrow:
+            resume_text = rrow.raw_text
+    finally:
+        rdb.close()
     resume_text_hash = hashlib.sha256((resume_text or "").encode("utf-8")).hexdigest()[:32]
 
     key = match_agent.build_match_cache_key(
@@ -99,8 +88,7 @@ def run_single_match(
         policy_version=match_agent.MATCH_POLICY_VERSION,
     )
 
-    # 硬条件预筛（规则，不消耗 LLM）
-    pre = precheck_job(resume, job_profile)
+    # 纭潯浠堕绛涳紙瑙勫垯锛屼笉娑堣€?LLM锛?    pre = precheck_job(resume, job_profile)
     hard_items: list[dict] = pre.get("items", [])
     if not pre["passed"]:
         return MatchOutcome(
@@ -113,7 +101,7 @@ def run_single_match(
             True,
         )
 
-    # 缓存命中：相同 简历+岗位+模型+模式+Prompt版本 时跳过 LLM
+    # 缂撳瓨鍛戒腑锛氱浉鍚?绠€鍘?宀椾綅+妯″瀷+妯″紡+Prompt鐗堟湰 鏃惰烦杩?LLM
     db = SessionLocal()
     try:
         row = (
@@ -151,11 +139,7 @@ def persist_match_row(
     status: str = "success",
     error: str = "",
 ) -> int | None:
-    """把一条匹配结果写入 match_results（存在则更新、不存在则新建）。
-
-    失败（match=None）时仅落 status=Failed + error_message，方便前端展示并单条重试。
-    返回行 id。供 workflow 两档匹配与重试接口复用。
-    """
+    """Persist one match result row for the current task and job."""
     db = SessionLocal()
     try:
         row = (
@@ -167,7 +151,7 @@ def persist_match_row(
             row = MatchResult(resume_id=resume_id, job_id=jid, task_id=task_id)
             db.add(row)
             try:
-                db.flush()  # 触发 INSERT，让唯一约束尽早暴露
+                db.flush()  # trigger insert early so uniqueness errors surface sooner
             except Exception:
                 db.rollback()
                 row = (
@@ -176,7 +160,7 @@ def persist_match_row(
                     .first()
                 )
                 if row is None:
-                    raise  # 真异常，向上传播
+                    raise  # 鐪熷紓甯革紝鍚戜笂浼犳挱
         row.resume_id = resume_id
         row.task_id = task_id
         row.match_mode = match_mode
@@ -186,13 +170,13 @@ def persist_match_row(
         row.cache_hit = cache_hit
         if match is not None:
             if match_mode == "deep":
-                # deep 成功：保留 quick 分数，记录 deep 分数，最终分数用 deep 覆盖
+                # deep 鎴愬姛锛氫繚鐣?quick 鍒嗘暟锛岃褰?deep 鍒嗘暟锛屾渶缁堝垎鏁扮敤 deep 瑕嗙洊
                 row.quick_score = row.quick_score or row.score
                 row.deep_score = match.score
                 row.partial_success = False
                 row.deep_error_message = ""
             else:
-                # quick 成功：记录 quick 分数
+                # quick 鎴愬姛锛氳褰?quick 鍒嗘暟
                 row.quick_score = match.score
                 row.partial_success = False
                 row.deep_error_message = ""
@@ -204,11 +188,13 @@ def persist_match_row(
             row.risk_notes = match.risk_notes
             row.detail_json = match.model_dump()
         else:
-            # 失败：deep 阶段失败不覆盖 quick 结果，仅标记 partial + 记录 deep 错误
-            if match_mode == "deep":
+            # deep 失败只有在存在 quick 兜底时才算 partial；直接 deep 的失败仍然是 failed
+            if match_mode == "deep" and status == "partial":
                 row.partial_success = True
                 row.deep_error_message = error
                 # 保留已有 quick_score / score / level 不变
+            else:
+                row.partial_success = False
         db.commit()
         return row.id
     finally:

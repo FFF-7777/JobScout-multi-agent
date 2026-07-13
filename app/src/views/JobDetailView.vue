@@ -284,7 +284,44 @@ function gotoResults() {
       <!-- ====== 岗位信息区（mode=info / all）====== -->
       <template v-if="showInfo">
         <div v-if="job.analysis" class="sub-card">
-          <div class="sub-head">岗位解析</div>
+          <div class="sub-head">智能体结构化解析</div>
+          <p v-if="job.analysis.jd_summary" class="analysis-summary">
+            {{ job.analysis.jd_summary }}
+          </p>
+
+          <div class="overview-grid">
+            <div v-if="job.analysis.education" class="overview-item">
+              <span class="overview-label">学历要求</span>
+              <strong>{{ job.analysis.education }}</strong>
+            </div>
+            <div v-if="job.analysis.experience" class="overview-item">
+              <span class="overview-label">经验要求</span>
+              <strong>{{ job.analysis.experience }}</strong>
+            </div>
+            <div v-if="job.analysis.job_type" class="overview-item">
+              <span class="overview-label">岗位类型</span>
+              <strong>{{ job.analysis.job_type }}</strong>
+            </div>
+            <div
+              v-if="job.analysis?.internship_days_per_week || job.analysis?.internship_duration"
+              class="overview-item"
+            >
+              <span class="overview-label">实习节奏</span>
+              <strong>
+                {{
+                  [
+                    job.analysis?.internship_days_per_week
+                      ? `每周 ${job.analysis.internship_days_per_week} 天`
+                      : "",
+                    job.analysis?.internship_duration || "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")
+                }}
+              </strong>
+            </div>
+          </div>
+
           <div class="chips" v-if="job.analysis.required_skills?.length">
             <span class="chip-title">必备技能</span>
             <el-tag
@@ -307,6 +344,7 @@ function gotoResults() {
               {{ s }}
             </el-tag>
           </div>
+
           <div class="chips" v-if="job.analysis.risk_tags?.length">
             <span class="chip-title">风险标签</span>
             <el-tag
@@ -336,11 +374,37 @@ function gotoResults() {
               </span>
             </div>
           </div>
+
+          <div
+            v-if="job.analysis.responsibilities?.length || job.analysis.requirements?.length"
+            class="analysis-section-grid"
+          >
+            <div v-if="job.analysis.responsibilities?.length" class="structured-panel">
+              <div class="structured-head">核心职责</div>
+              <ol class="structured-list ordered">
+                <li v-for="item in job.analysis.responsibilities" :key="`resp-${item}`">
+                  {{ item }}
+                </li>
+              </ol>
+            </div>
+            <div v-if="job.analysis.requirements?.length" class="structured-panel">
+              <div class="structured-head">任职要求</div>
+              <ul class="structured-list">
+                <li v-for="item in job.analysis.requirements" :key="`req-${item}`">
+                  {{ item }}
+                </li>
+              </ul>
+            </div>
+          </div>
+
           <div
             v-if="
               !job.analysis.required_skills?.length &&
               !job.analysis.preferred_skills?.length &&
-              !job.analysis.risk_tags?.length
+              !job.analysis.risk_tags?.length &&
+              !job.analysis.responsibilities?.length &&
+              !job.analysis.requirements?.length &&
+              !job.analysis.jd_summary
             "
             class="empty-tip"
           >
@@ -349,7 +413,8 @@ function gotoResults() {
         </div>
 
         <div class="sub-card">
-          <div class="sub-head">JD 原文</div>
+          <div class="sub-head">JD OCR 识别结果</div>
+          <div class="raw-source-note">以下内容为截图 / OCR / 导入链路拿到的原始文本，便于和结构化解析交叉核对。</div>
           <pre class="jd">{{ job.jd_text }}</pre>
         </div>
       </template>
@@ -793,6 +858,46 @@ function gotoResults() {
   display: flex;
   align-items: center;
 }
+.analysis-summary {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f6f9ff 0%, #fbfcff 100%);
+  border: 1px solid #e6ecff;
+  color: #344054;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.overview-item {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #ebeff5;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.overview-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #8a94a6;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.overview-item strong {
+  color: #1f2733;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 .empty-tip {
   color: #8a94a6;
   font-size: 13px;
@@ -875,7 +980,47 @@ ol {
   color: #3a6ff7;
 }
 
+.analysis-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.structured-panel {
+  padding: 16px 16px 14px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #e9edf5;
+}
+
+.structured-head {
+  margin-bottom: 10px;
+  color: #1f2733;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.structured-list {
+  margin: 0;
+  padding-left: 20px;
+  color: #344054;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.structured-list.ordered {
+  padding-left: 22px;
+}
+
 /* === JD 原文 === */
+.raw-source-note {
+  margin-bottom: 12px;
+  color: #8a94a6;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .jd {
   white-space: pre-wrap;
   background: #f5f7fb;
@@ -1014,5 +1159,7 @@ ol {
   .score-body { flex-direction: column; align-items: flex-start; }
   .core-modules { grid-template-columns: 1fr; }
   .decision-row { flex-direction: column; }
+  .overview-grid { grid-template-columns: 1fr; }
+  .analysis-section-grid { grid-template-columns: 1fr; }
 }
 </style>

@@ -106,43 +106,52 @@ def health():
     s = settings
     # 静态探活：列每个 Agent 当前实际用的模型 + 思考模式 + 配置状态。
     # 注意：这是同步接口，不实际调用 LLM；模型可达性需另调 POST /api/test-llm。
+    fast_info = llm_service.describe_role("fast")
+    reasoning_info = llm_service.describe_role("reasoning")
+    report_info = llm_service.describe_role("report")
     agents = [
         {
             "name": "Resume Agent",
             "role": "fast",
-            "model": s.llm_fast_model or s.llm_model,
-            "provider": s.llm_fast_provider,
-            "enable_thinking": s.llm_fast_enable_thinking,
-            "configured": bool(s.dashscope_api_key),
+            "model": fast_info["model"],
+            "provider": fast_info["provider"],
+            "enable_thinking": fast_info["enable_thinking"],
+            "configured": fast_info["configured"],
         },
         {
             "name": "Job Agent",
             "role": "fast",
-            "model": s.llm_fast_model or s.llm_model,
-            "provider": s.llm_fast_provider,
-            "enable_thinking": s.llm_fast_enable_thinking,
-            "configured": bool(s.dashscope_api_key),
+            "model": fast_info["model"],
+            "provider": fast_info["provider"],
+            "enable_thinking": fast_info["enable_thinking"],
+            "configured": fast_info["configured"],
         },
         {
             "name": "Match Agent",
             "role": "fast + reasoning" if s.match_two_tier else "reasoning",
             "model": (
-                f"quick: {s.llm_fast_model or s.llm_model} / "
-                f"deep: {s.llm_reasoning_model or s.llm_model}"
+                f"quick: {fast_info['model']} / "
+                f"deep: {reasoning_info['model']}"
                 if s.match_two_tier
-                else s.llm_reasoning_model or s.llm_model
+                else reasoning_info["model"]
             ),
-            "provider": s.llm_reasoning_provider,
-            "enable_thinking": s.llm_reasoning_enable_thinking,
-            "configured": bool(s.dashscope_api_key),
+            "provider": (
+                f"quick: {fast_info['provider']} / deep: {reasoning_info['provider']}"
+                if s.match_two_tier
+                else reasoning_info["provider"]
+            ),
+            "enable_thinking": reasoning_info["enable_thinking"],
+            "configured": bool(fast_info["configured"] and reasoning_info["configured"])
+            if s.match_two_tier
+            else reasoning_info["configured"],
         },
         {
             "name": "Report Agent",
             "role": "report",
-            "model": s.llm_report_model or s.llm_reasoning_model or s.llm_model,
-            "provider": s.llm_reasoning_provider,
-            "enable_thinking": s.llm_report_enable_thinking,
-            "configured": bool(s.dashscope_api_key),
+            "model": report_info["model"],
+            "provider": report_info["provider"],
+            "enable_thinking": report_info["enable_thinking"],
+            "configured": report_info["configured"],
         },
     ]
     return {
@@ -157,13 +166,48 @@ def health():
 
 @app.post("/api/test-llm", tags=["system"])
 def test_llm():
-    """调用一次模型自检，确认 API Key 与端点可用。"""
+    """逐个测试各智能体当前实际使用的模型连通性。"""
     try:
-        reply = llm_service.ping()
+        checks = [
+            ("Resume Agent", "fast", settings.resolve_model("fast")),
+            ("Job Agent", "fast", settings.resolve_model("fast")),
+        ]
+        if settings.match_two_tier:
+            checks.extend(
+                [
+                    ("Match Agent (Quick)", "fast", settings.resolve_model("fast")),
+                    ("Match Agent (Deep)", "reasoning", settings.resolve_model("reasoning")),
+                ]
+            )
+        else:
+            checks.append(("Match Agent", "reasoning", settings.resolve_model("reasoning")))
+        checks.append(("Report Agent", "report", settings.resolve_model("report")))
+        results = []
+        for name, role, model in checks:
+            try:
+                reply = llm_service.ping_role(role)
+                results.append(
+                    {
+                        "name": name,
+                        "ok": True,
+                        "model": model,
+                        "provider": settings.resolve_provider(role),
+                        "reply": reply,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                results.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "model": model,
+                        "provider": settings.resolve_provider(role),
+                        "reply": str(exc),
+                    }
+                )
         return {
-            "ok": True,
-            "model": settings.llm_fast_model or settings.llm_model,
-            "reply": reply,
+            "ok": all(item["ok"] for item in results),
+            "results": results,
         }
     except llm_service.LLMConfigError as e:
         raise HTTPException(400, str(e)) from e

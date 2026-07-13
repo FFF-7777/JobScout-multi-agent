@@ -1,11 +1,4 @@
-"""LLM 服务：封装阿里云百炼（通义千问）OpenAI 兼容调用，返回结构化 JSON。
-
-设计要点：
-- 纯 LLM 实现，缺少 API Key 时抛出 LLMConfigError（不做静默降级）。
-- chat_json() 强制模型输出 JSON 对象，解析失败时重试一次。
-- 网络错误（连接/超时）与限流（429）自动指数退避重试，避免偶发抖动导致任务整体失败。
-- 所有重试后仍失败的「可恢复错误」统一包装为 LLMOutputError，由调用方/全局处理器转成可读错误。
-"""
+"""LLM 服务：按模型档位选择不同厂商 / Base URL / API Key。"""
 from __future__ import annotations
 
 import json
@@ -25,108 +18,118 @@ from config import get_settings
 
 
 class LLMConfigError(RuntimeError):
-    """LLM 配置缺失（如未设置 API Key）。"""
+    """LLM 配置缺失。"""
 
 
 class LLMOutputError(RuntimeError):
-    """LLM 返回内容无法解析为期望的 JSON，或重试后仍网络/限流失败。"""
+    """LLM 输出异常或连续重试后仍失败。"""
 
 
-_client: OpenAI | None = None
+_clients: dict[tuple[str, str, int], OpenAI] = {}
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.5
 
 
-def _get_client() -> OpenAI:
-    global _client
+def _role_label(role: str) -> str:
+    return {
+        "fast": "快速档",
+        "reasoning": "推理档",
+        "report": "报告档",
+        "vision": "视觉档",
+        "ocr": "OCR 档",
+        "fallback": "兜底档",
+    }.get(role, role)
+
+
+def _get_client(model_role: str) -> OpenAI:
     settings = get_settings()
-    if not settings.has_api_key:
+    api_key = settings.resolve_api_key(model_role)
+    base_url = settings.resolve_base_url(model_role)
+    if not api_key:
         raise LLMConfigError(
-            "未配置 DASHSCOPE_API_KEY，无法调用大模型。请在 server/.env 中填写有效的百炼 API Key。"
+            f"{_role_label(model_role)}未配置 API Key，请在 server/.env 中填写对应的 LLM_*_API_KEY，或填写全局 LLM_API_KEY。"
         )
-    if _client is None:
-        _client = OpenAI(
-            api_key=settings.dashscope_api_key,
-            base_url=settings.llm_base_url,
+    key = (api_key, base_url, settings.llm_timeout)
+    client = _clients.get(key)
+    if client is None:
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
             timeout=settings.llm_timeout,
         )
-    return _client
+        _clients[key] = client
+    return client
 
 
 def _resolve_model(role: str) -> str:
-    """把模型角色映射成具体模型名；未配置时回退到全局 llm_model。
+    return get_settings().resolve_model(role)
 
-    角色：fast（快速低成本）/ reasoning（强推理+思考）/
-          report（报告生成）/ vision（多模态兜底，预留）/
-          ocr（截图识别）/ fallback（故障切换）。
-    """
-    s = get_settings()
-    mapping = {
-        "fast": s.llm_fast_model or s.llm_model,
-        "reasoning": s.llm_reasoning_model or s.llm_model,
-        "report": s.llm_report_model or s.llm_reasoning_model or s.llm_model,
-        "vision": s.llm_vision_model or s.llm_model,
-        "ocr": s.llm_ocr_model or s.llm_model,
-        "fallback": s.llm_fallback_model or s.llm_model,
-    }
-    return mapping.get(role, s.llm_model)
+
+def _resolve_provider(role: str) -> str:
+    return get_settings().resolve_provider(role)
 
 
 def _resolve_enable_thinking(role: str) -> bool:
-    """根据角色判断是否启用思考模式。"""
     s = get_settings()
-    mapping = {
+    return {
         "fast": s.llm_fast_enable_thinking,
         "reasoning": s.llm_reasoning_enable_thinking,
         "report": s.llm_report_enable_thinking,
+    }.get(role, False)
+
+
+def describe_role(role: str) -> dict[str, str | bool]:
+    s = get_settings()
+    return {
+        "provider": _resolve_provider(role),
+        "base_url": s.resolve_base_url(role),
+        "model": s.resolve_model(role),
+        "configured": s.role_configured(role),
+        "enable_thinking": _resolve_enable_thinking(role),
     }
-    return mapping.get(role, False)
 
 
 def _with_retry(fn):
-    """对网络错误与限流做指数退避重试；不可恢复错误直接抛出。"""
     delay = _BASE_DELAY
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
             return fn()
-        except RateLimitError as e:  # 429 限流
+        except RateLimitError as e:
             last_exc = e
             if attempt == _MAX_RETRIES - 1:
-                raise LLMOutputError(
-                    f"触发限流（429），重试 {_MAX_RETRIES} 次仍失败：{e}"
-                ) from e
+                raise LLMOutputError(f"触发限流（429），重试 {_MAX_RETRIES} 次仍失败：{e}") from e
             time.sleep(delay)
             delay *= 2
-        except (APIConnectionError, APITimeoutError) as e:  # 网络抖动/超时
+        except (APIConnectionError, APITimeoutError) as e:
             last_exc = e
             if attempt == _MAX_RETRIES - 1:
-                raise LLMOutputError(
-                    f"LLM 连接/超时失败，重试后仍不可达：{e}"
-                ) from e
+                raise LLMOutputError(f"LLM 连接/超时失败，重试后仍不可达：{e}") from e
             time.sleep(delay)
             delay *= 2
-        except (BadRequestError, PermissionDeniedError) as e:  # 模型不支持配置 / 无权限 → 不重试
+        except (BadRequestError, PermissionDeniedError) as e:
             raise LLMOutputError(str(e)) from e
-    raise LLMOutputError(f"LLM 调用失败：{last_exc}") if last_exc else RuntimeError(
-        "LLM 重试耗尽"
-    )
+    raise LLMOutputError(f"LLM 调用失败：{last_exc}") if last_exc else RuntimeError("LLM 重试耗尽")
 
 
 def chat_text(
     system: str, user: str, temperature: float | None = None, model_role: str = "fast"
 ) -> str:
-    """普通文本对话。model_role 决定用哪一档模型（默认 fast）。"""
     settings = get_settings()
-    client = _get_client()
+    client = _get_client(model_role)
     model = _resolve_model(model_role)
     fallback = _resolve_model("fallback")
-    use_fallback = bool(fallback) and fallback != model
+    fallback_configured = settings.role_configured("fallback")
+    use_fallback = fallback_configured and (
+        settings.resolve_api_key("fallback") != settings.resolve_api_key(model_role)
+        or settings.resolve_base_url("fallback") != settings.resolve_base_url(model_role)
+        or fallback != model
+    )
     enable_thinking = _resolve_enable_thinking(model_role)
 
-    def _do(use_model: str) -> str:
-        kwargs: dict = {
+    def _do(role: str, use_model: str) -> str:
+        kwargs: dict[str, Any] = {
             "model": use_model,
             "temperature": settings.llm_temperature if temperature is None else temperature,
             "messages": [
@@ -134,16 +137,16 @@ def chat_text(
                 {"role": "user", "content": user},
             ],
         }
-        if enable_thinking:
+        if enable_thinking and role == model_role:
             kwargs["extra_body"] = {"enable_thinking": True}
-        resp = client.chat.completions.create(**kwargs)
+        resp = _get_client(role).chat.completions.create(**kwargs)
         return (resp.choices[0].message.content or "").strip()
 
     try:
-        return _with_retry(lambda: _do(model))
+        return _with_retry(lambda: _do(model_role, model))
     except LLMOutputError:
         if use_fallback:
-            return _with_retry(lambda: _do(fallback))
+            return _with_retry(lambda: _do("fallback", fallback))
         raise
 
 
@@ -153,67 +156,64 @@ def chat_json(
     temperature: float | None = None,
     model_role: str = "fast",
 ) -> dict[str, Any]:
-    """要求模型输出 JSON 对象，返回解析后的 dict。失败重试一次。
-
-    model_role：fast / reasoning / report / vision / fallback。
-    思考模式下跳过 response_format（与 reasoning 不兼容），改用 prompt 指令约束 JSON。
-    """
     settings = get_settings()
-    client = _get_client()
+    client = _get_client(model_role)
     model = _resolve_model(model_role)
     fallback = _resolve_model("fallback")
-    use_fallback = bool(fallback) and fallback != model
+    fallback_configured = settings.role_configured("fallback")
+    use_fallback = fallback_configured and (
+        settings.resolve_api_key("fallback") != settings.resolve_api_key(model_role)
+        or settings.resolve_base_url("fallback") != settings.resolve_base_url(model_role)
+        or fallback != model
+    )
     enable_thinking = _resolve_enable_thinking(model_role)
 
-    def _call(use_model: str, extra_hint: str = "") -> str:
-        # 非思考模式默认先试 response_format；部分模型（如 qwen3.6-35b-a3b）
-        # 不支持该参数，会在第一次调用时 400，我们在 _do 内捕获后降级重试。
-        _use_response_format = not enable_thinking
+    def _call(role: str, use_model: str, extra_hint: str = "") -> str:
+        _use_response_format = not (enable_thinking and role == model_role)
 
         def _do() -> str:
             nonlocal _use_response_format
-            kwargs: dict = {
+            kwargs: dict[str, Any] = {
                 "model": use_model,
-                "temperature": settings.llm_temperature
-                if temperature is None
-                else temperature,
+                "temperature": settings.llm_temperature if temperature is None else temperature,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user + extra_hint},
                 ],
             }
-            if enable_thinking:
+            if enable_thinking and role == model_role:
                 kwargs["extra_body"] = {"enable_thinking": True}
             elif _use_response_format:
                 kwargs["response_format"] = {"type": "json_object"}
-            # response_format=json_object 不支持时降级（仅影响超时恢复，不影响正常路径）
             try:
-                resp = client.chat.completions.create(**kwargs)
-            except BadRequestError as e:
-                if not _use_response_format or enable_thinking:
-                    raise  # 降级后还失败，真异常
+                resp = _get_client(role).chat.completions.create(**kwargs)
+            except BadRequestError:
+                if not _use_response_format or (enable_thinking and role == model_role):
+                    raise
                 _use_response_format = False
                 kwargs.pop("response_format", None)
-                resp = client.chat.completions.create(**kwargs)
+                resp = _get_client(role).chat.completions.create(**kwargs)
             return (resp.choices[0].message.content or "").strip()
 
         return _with_retry(_do)
 
-    raw = _call(model)
+    raw = _call(model_role, model)
     parsed = _try_parse(raw)
     if parsed is not None:
         return parsed
 
-    # 重试一次，强调只输出 JSON
-    raw = _call(model, "\n\n请严格只输出一个合法的 JSON 对象，不要包含任何解释或 markdown 代码块标记。")
+    raw = _call(
+        model_role,
+        model,
+        "\n\n请严格只输出一个合法的 JSON 对象，不要包含任何解释或 markdown 代码块标记。",
+    )
     parsed = _try_parse(raw)
     if parsed is not None:
         return parsed
 
-    # 用兜底模型再试（仅一次），避免主模型持续输出非 JSON 卡死整个流程
     if use_fallback:
         try:
-            raw = _call(fallback)
+            raw = _call("fallback", fallback)
         except LLMOutputError:
             raw = ""
         parsed = _try_parse(raw)
@@ -226,7 +226,6 @@ def chat_json(
 def _try_parse(raw: str) -> dict[str, Any] | None:
     if not raw:
         return None
-    # 去除可能的 ```json ... ``` 包裹
     text = raw.strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -237,7 +236,6 @@ def _try_parse(raw: str) -> dict[str, Any] | None:
         data = json.loads(text)
         return data if isinstance(data, dict) else None
     except json.JSONDecodeError:
-        # 尝试截取第一个 { 到最后一个 }
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
@@ -249,5 +247,8 @@ def _try_parse(raw: str) -> dict[str, Any] | None:
 
 
 def ping() -> str:
-    """自检：调用一次模型确认可用。"""
     return chat_text("你是一个助手。", "请只回复两个字：可用")
+
+
+def ping_role(model_role: str) -> str:
+    return chat_text("你是一个助手。", "请只回复两个字：可用", model_role=model_role)

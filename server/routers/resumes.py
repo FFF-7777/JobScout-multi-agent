@@ -6,28 +6,39 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from config import get_settings
 from database import get_db
 from models import JobReport, MatchResult, Report, Resume
 from schemas.resume import (
     ProfileUpdateRequest,
+    ResumeImportImageFailed,
+    ResumeImportImagesResult,
     ResumeOut,
     ResumeParseRequest,
 )
-from services import document_parser, resume_agent
+from services import baidu_ocr, document_parser, resume_agent
 
 router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 
-_MAX_UPLOAD = 10 * 1024 * 1024  # 10 MiB 上传上限
+_MAX_UPLOAD = 10 * 1024 * 1024
+_MAX_IMAGES = 20
+_IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/bmp", "image/webp"}
+
+
+def _get_ocr_service():
+    provider = (get_settings().ocr_provider or "baidu").lower()
+    if provider == "tencent":
+        from services import tencent_ocr
+
+        return tencent_ocr, "tencent"
+    return baidu_ocr, "baidu"
 
 
 def _build_profile(resume: Resume, db: Session, text: str) -> Resume:
-    """内容哈希命中则复用缓存画像，跳过 LLM；否则解析并写回缓存字段。
-
-    缓存 key = resume_text 的 sha256 前 16 位。同一份简历反复上传/重新解析时不重复消耗模型。
-    """
+    """复用内容哈希缓存；未命中时调用 Resume Agent 生成画像。"""
     h = resume_agent.compute_hash(text)
     if resume.profile_json and resume.content_hash == h:
-        return resume  # 命中缓存
+        return resume
     profile = resume_agent.run(text, model_role="fast")
     resume.profile_json = profile.model_dump()
     resume.content_hash = h
@@ -38,9 +49,7 @@ def _build_profile(resume: Resume, db: Session, text: str) -> Resume:
 
 
 @router.post("/upload", response_model=ResumeOut)
-async def upload_resume(
-    file: UploadFile = File(...), db: Session = Depends(get_db)
-):
+async def upload_resume(file: UploadFile = File(...), db: Session = Depends(get_db)):
     data = await file.read()
     if len(data) > _MAX_UPLOAD:
         raise HTTPException(413, f"文件过大（上限 {_MAX_UPLOAD // 1024 // 1024} MiB）")
@@ -56,9 +65,69 @@ async def upload_resume(
     return resume
 
 
+@router.post("/import-images", response_model=ResumeImportImagesResult)
+async def import_resume_images(
+    files: list[UploadFile] = File(...), db: Session = Depends(get_db)
+):
+    if not files:
+        raise HTTPException(400, "未上传任何图片")
+    if len(files) > _MAX_IMAGES:
+        raise HTTPException(400, f"单次最多上传 {_MAX_IMAGES} 张图片")
+
+    images: list[tuple[bytes, str]] = []
+    for f in files:
+        mime = (f.content_type or "").lower()
+        if mime not in _IMAGE_MIMES:
+            raise HTTPException(400, f"不支持的图片格式：{f.filename or 'unknown'}")
+        data = await f.read()
+        if len(data) > _MAX_UPLOAD:
+            raise HTTPException(413, f"文件 {f.filename} 过大（上限 {_MAX_UPLOAD // 1024 // 1024} MB）")
+        images.append((data, f.filename or "resume-image"))
+
+    ocr_service, provider = _get_ocr_service()
+    try:
+        ocr_results = await ocr_service.recognize_images_batch(images)
+    except ValueError as e:
+        raise HTTPException(400, f"OCR 识别失败：{e}") from e
+
+    pages: list[str] = []
+    failed: list[ResumeImportImageFailed] = []
+    for idx, item in enumerate(ocr_results, start=1):
+        filename = item.get("filename", f"page-{idx}")
+        text = (item.get("text") or "").strip()
+        if item.get("error"):
+            failed.append(ResumeImportImageFailed(filename=filename, error=str(item["error"])))
+            continue
+        if not text:
+            failed.append(ResumeImportImageFailed(filename=filename, error="未识别到文字"))
+            continue
+        pages.append(text)
+
+    if not pages:
+        detail = "；".join(f"{f.filename}: {f.error}" for f in failed[:5])
+        raise HTTPException(422, f"所有图片识别均失败：{detail or '未识别到可用文字'}")
+
+    merged_text = "\n\n".join(pages)
+    first_name = files[0].filename or "resume-image"
+    filename = first_name if len(files) == 1 else f"{first_name.rsplit('.', 1)[0]}-images.txt"
+
+    resume = Resume(filename=filename, raw_text=merged_text)
+    db.add(resume)
+    db.commit()
+    db.refresh(resume)
+    resume = _build_profile(resume, db, merged_text)
+    db.refresh(resume)
+    return ResumeImportImagesResult(
+        resume=resume,
+        total=len(files),
+        success=len(pages),
+        provider=provider,
+        failed=failed,
+    )
+
+
 @router.post("/parse", response_model=ResumeOut)
 def parse_resume(req: ResumeParseRequest, db: Session = Depends(get_db)):
-    """粘贴文本 -> 保存并生成画像。"""
     if not req.text.strip():
         raise HTTPException(400, "简历文本为空")
     resume = Resume(filename=req.filename, raw_text=req.text)
@@ -72,7 +141,6 @@ def parse_resume(req: ResumeParseRequest, db: Session = Depends(get_db)):
 
 @router.post("/{resume_id}/parse", response_model=ResumeOut)
 def parse_existing(resume_id: int, db: Session = Depends(get_db)):
-    """对已上传的简历触发画像解析（内容不变则命中缓存，跳过 LLM）。"""
     resume = db.get(Resume, resume_id)
     if resume is None:
         raise HTTPException(404, "简历不存在")
@@ -109,7 +177,7 @@ def update_profile(
 
 @router.delete("/{resume_id}")
 def delete_resume(resume_id: int, db: Session = Depends(get_db)):
-    """删除简历、匹配结果及对应报告；agent_runs 作为执行历史保留。"""
+    """删除简历、匹配结果和对应报告；保留 Agent 执行历史。"""
     resume = db.get(Resume, resume_id)
     if resume is None:
         raise HTTPException(404, "简历不存在")
@@ -131,7 +199,6 @@ def delete_resume(resume_id: int, db: Session = Depends(get_db)):
 
 @router.get("/summary/list")
 def list_resume_summary(db: Session = Depends(get_db)):
-    """简历列表的精简版（id/filename/has_profile/profile_name/created_at），避免把 raw_text 全量返回。"""
     rows = db.query(Resume).order_by(Resume.id.desc()).all()
     out = []
     for r in rows:

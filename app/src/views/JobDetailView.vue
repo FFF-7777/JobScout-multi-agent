@@ -150,8 +150,19 @@ async function load(targetId?: number | null) {
     job.value = await api.getJob(id);
     // 只在需要显示分析结果时才去拉
     if (showAnalysis.value) {
-      const results = await api.listResults(store.taskId || undefined);
-      match.value = results.find((r) => r.job_id === id) || null;
+      // 优先按 job_id 查最新匹配结果（不依赖 store.taskId），
+      // 失败再退到 listResults，避免在 ResultsView 弹窗时 store.taskId 为空
+      let r: MatchResult | null = null;
+      try {
+        r = await api.getResultByJob(id);
+      } catch (e) {
+        // 404 / 网络错误退到 listResults
+      }
+      if (!r && store.taskId) {
+        const results = await api.listResults(store.taskId);
+        r = results.find((x) => x.job_id === id) || null;
+      }
+      match.value = r;
     } else {
       match.value = null;
     }

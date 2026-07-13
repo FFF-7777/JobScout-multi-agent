@@ -64,6 +64,24 @@ def get_result(result_id: int, db: Session = Depends(get_db)):
     return _enrich(row, db)
 
 
+@router.get("/results/by-job/{job_id}", response_model=MatchResultOut | None)
+def get_result_by_job(job_id: int, db: Session = Depends(get_db)):
+    """按 job_id 查最新一条匹配结果（无论属于哪个 task）。
+
+    用于 JobDetailView modal 嵌入场景——不依赖 store.taskId，
+    刷新页面 / 切换 task 也能显示对应岗位的最近分析。
+    """
+    row = (
+        db.query(MatchResult)
+        .filter(MatchResult.job_id == job_id)
+        .order_by(MatchResult.id.desc())
+        .first()
+    )
+    if row is None:
+        return None
+    return _enrich(row, db)
+
+
 class _RetryRequest(BaseModel):
     # 要重试的匹配结果 id；不传则重试该 task 下所有 failed 的结果
     result_ids: list[int] = []

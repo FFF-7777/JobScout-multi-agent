@@ -237,6 +237,10 @@ export const api = {
       .then((r) => r.data),
   getResult: (id: number) =>
     http.get<MatchResult>(`/api/match/results/${id}`).then((r) => r.data),
+  getResultByJob: (jobId: number) =>
+    http
+      .get<MatchResult | null>(`/api/match/results/by-job/${jobId}`)
+      .then((r) => r.data),
 
   // P2#14 单/批量重试失败的匹配结果（不传 result_ids 则重试该 task 下所有 failed）
   retryMatchResults: (result_ids: number[] = [], task_id?: string) =>

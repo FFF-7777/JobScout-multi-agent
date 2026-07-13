@@ -169,6 +169,34 @@ async function importImages(uploadedFiles: File[]) {
 // 拖拽/多选时 el-upload 会逐个触发 http-request，
 // 改用 before-upload 收集文件 + 手动按钮触发
 const pendingImageFiles = ref<File[]>([]);
+// 每张待导入图的本地预览 URL（用于缩略图）
+const pendingImagePreviews = ref<string[]>([]);
+
+function addPendingImage(file: File) {
+  pendingImageFiles.value.push(file);
+  pendingImagePreviews.value.push(URL.createObjectURL(file));
+}
+
+function removePendingImage(idx: number) {
+  // 释放 objectURL，避免内存泄漏
+  const url = pendingImagePreviews.value[idx];
+  if (url) URL.revokeObjectURL(url);
+  pendingImageFiles.value.splice(idx, 1);
+  pendingImagePreviews.value.splice(idx, 1);
+}
+
+function clearPendingImages() {
+  pendingImagePreviews.value.forEach((u) => URL.revokeObjectURL(u));
+  pendingImageFiles.value = [];
+  pendingImagePreviews.value = [];
+}
+
+async function confirmImportImages() {
+  if (!pendingImageFiles.value.length) return;
+  const files = [...pendingImageFiles.value];
+  clearPendingImages();
+  await importImages(files);
+}
 
 /** 剪贴板粘贴：Ctrl+V 粘贴截图自动收集到待确认队列 */
 function handlePaste(e: ClipboardEvent) {
@@ -189,7 +217,7 @@ function handlePaste(e: ClipboardEvent) {
   const named = imageFiles.map(
     (f, i) => new File([f], `clipboard_${Date.now()}_${i + 1}.${f.type.split("/")[1] || "png"}`, { type: f.type })
   );
-  pendingImageFiles.value.push(...named);
+  named.forEach((f) => addPendingImage(f));
 
   ElMessage.success(
     `已粘贴 ${named.length} 张图片到待导入队列（共 ${pendingImageFiles.value.length} 张），请点「确认导入」`
@@ -203,6 +231,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("paste", handlePaste);
   stopParsePolling();
+  clearPendingImages();
 });
 
 async function reanalyzeOne(job: Job) {
@@ -387,7 +416,7 @@ function startAnalyze() {
         <el-upload
           :show-file-list="false"
           :auto-upload="false"
-          :on-change="(file: any) => { if (file.raw) pendingImageFiles.push(file.raw); }"
+          :on-change="(file: any) => { if (file.raw) addPendingImage(file.raw); }"
           accept="image/png,image/jpeg,image/jpg,image/bmp,image/webp"
           multiple
         >
@@ -397,12 +426,35 @@ function startAnalyze() {
           v-if="pendingImageFiles.length > 0"
           type="success"
           :loading="loading"
-          @click="() => { importImages(pendingImageFiles); pendingImageFiles = []; }"
+          @click="confirmImportImages"
         >
           确认导入 ({{ pendingImageFiles.length }} 张)
         </el-button>
+        <el-button
+          v-if="pendingImageFiles.length > 0"
+          plain
+          @click="clearPendingImages"
+        >
+          清空
+        </el-button>
         <span class="hint paste-hint">支持 Ctrl+V 直接粘贴截图</span>
         <span class="hint">表格建议列：company_name / job_title / city / salary / jd_text / job_url / source</span>
+      </div>
+
+      <!-- 待导入图片预览条：单张右上角 × 按钮 / 一键清空 -->
+      <div v-if="pendingImageFiles.length" class="image-preview-bar">
+        <div class="preview-label">待导入图片（{{ pendingImageFiles.length }}）：</div>
+        <div class="preview-list">
+          <div v-for="(url, idx) in pendingImagePreviews" :key="idx" class="preview-item">
+            <img :src="url" :alt="pendingImageFiles[idx]?.name" />
+            <button class="preview-remove" type="button" title="移除此张" @click="removePendingImage(idx)">
+              ×
+            </button>
+            <div class="preview-name" :title="pendingImageFiles[idx]?.name">
+              {{ pendingImageFiles[idx]?.name }}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="url-row">
@@ -674,6 +726,78 @@ function startAnalyze() {
 }
 .url-row .el-input {
   flex: 1;
+}
+
+/* === 待导入图片预览条 === */
+.image-preview-bar {
+  margin-top: 14px;
+  padding: 12px;
+  background: #f7f9fc;
+  border: 1px dashed #c8d2e2;
+  border-radius: 8px;
+}
+.preview-label {
+  font-size: 13px;
+  color: #5b667a;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.preview-item {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #d8dee8;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.preview-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.preview-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(20, 30, 50, 0.7);
+  color: #fff;
+  font-size: 14px;
+  line-height: 18px;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.preview-remove:hover {
+  background: #f56c6c;
+}
+.preview-name {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  font-size: 10px;
+  color: #fff;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+  padding: 12px 4px 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 /* === 岗位详情全屏大卡 modal === */

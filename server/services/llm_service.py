@@ -15,7 +15,9 @@ from typing import Any
 from openai import (
     APIConnectionError,
     APITimeoutError,
+    BadRequestError,
     OpenAI,
+    PermissionDeniedError,
     RateLimitError,
 )
 
@@ -105,6 +107,8 @@ def _with_retry(fn):
                 ) from e
             time.sleep(delay)
             delay *= 2
+        except (BadRequestError, PermissionDeniedError) as e:  # 模型不支持配置 / 无权限 → 不重试
+            raise LLMOutputError(str(e)) from e
     raise LLMOutputError(f"LLM 调用失败：{last_exc}") if last_exc else RuntimeError(
         "LLM 重试耗尽"
     )
@@ -162,7 +166,12 @@ def chat_json(
     enable_thinking = _resolve_enable_thinking(model_role)
 
     def _call(use_model: str, extra_hint: str = "") -> str:
+        # 非思考模式默认先试 response_format；部分模型（如 qwen3.6-35b-a3b）
+        # 不支持该参数，会在第一次调用时 400，我们在 _do 内捕获后降级重试。
+        _use_response_format = not enable_thinking
+
         def _do() -> str:
+            nonlocal _use_response_format
             kwargs: dict = {
                 "model": use_model,
                 "temperature": settings.llm_temperature
@@ -174,11 +183,18 @@ def chat_json(
                 ],
             }
             if enable_thinking:
-                # 思考模式与 response_format 不兼容，用 prompt 强制 JSON
                 kwargs["extra_body"] = {"enable_thinking": True}
-            else:
+            elif _use_response_format:
                 kwargs["response_format"] = {"type": "json_object"}
-            resp = client.chat.completions.create(**kwargs)
+            # response_format=json_object 不支持时降级（仅影响超时恢复，不影响正常路径）
+            try:
+                resp = client.chat.completions.create(**kwargs)
+            except BadRequestError as e:
+                if not _use_response_format or enable_thinking:
+                    raise  # 降级后还失败，真异常
+                _use_response_format = False
+                kwargs.pop("response_format", None)
+                resp = client.chat.completions.create(**kwargs)
             return (resp.choices[0].message.content or "").strip()
 
         return _with_retry(_do)

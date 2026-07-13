@@ -670,6 +670,8 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             _update_run(
                 task_id,
                 "Match Agent",
+                status="success",
+                progress=100,
                 summary=(
                     f"完成 {len(results)} 个岗位评分，最高 {top} 分"
                     f"（全部 summary 模式，跳过深度阶段以节省时间）"
@@ -677,6 +679,11 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
                 eta_seconds=0,
                 eta_low=0,
                 eta_high=0,
+                total_items=total,
+                completed_items=total,
+                failed_items=phase_failed["quick"] + phase_failed["deep"],
+                in_flight_items=[],
+                current_item="",
             )
         else:
             deep_targets = [{"job_id": jid} for jid in deep_ids]

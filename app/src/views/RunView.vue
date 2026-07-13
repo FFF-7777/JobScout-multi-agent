@@ -16,6 +16,10 @@ let pollTimer: number | null = null;
 let tickTimer: number | null = null;
 // 标记是否已发过完成通知，避免重复提示
 let notifiedDone = false;
+// 连续轮询后任务状态无变化（进度/耗时）的计数，用于检测"死任务"
+let stalePollCount = 0;
+let lastSeenProgress = 0;
+let lastSeenElapsed = 0;
 
 // 任务起始时间（毫秒）。轮询时若后端未给 started_at，用本地时间兜底。
 const taskStartedAt = ref<number | null>(null);
@@ -120,6 +124,7 @@ async function poll(taskId: string) {
       taskStartedAt.value = null;
       running.value = false;
       stopPoll();
+      stalePollCount = 0;
       if (!notifiedDone) {
         notifiedDone = true;
         const successCount = t.steps.filter((s) => s.status === "success").length;
@@ -131,6 +136,25 @@ async function poll(taskId: string) {
         }
       }
     } else {
+      // 检测死任务：连续 20 次轮询（约 36s）进度无变化且仍在 running
+      const matchStep = t.steps.find((s) => s.agent_name === "Match Agent");
+      const currentProgress = matchStep?.progress || 0;
+      const currentElapsed = matchStep?.started_at ? Date.now() - parseBackendTime(matchStep.started_at) : 0;
+      if (currentProgress > 0 && currentProgress === lastSeenProgress && status.value === "running") {
+        stalePollCount++;
+        if (stalePollCount >= 20) {
+          const mins = Math.round(currentElapsed / 60000);
+          ElMessage.warning(
+            `任务已运行 ${mins} 分钟无进展，可能后端已重启。请点击「重新开始」重新运行`,
+            { duration: 8000 }
+          );
+          stalePollCount = 0; // 防重复弹
+        }
+      } else {
+        stalePollCount = 0;
+      }
+      lastSeenProgress = currentProgress;
+      lastSeenElapsed = currentElapsed;
       // 用第一个 step 的 started_at 当作任务起始时间（仅在 running 时）
       const firstStarted = t.steps.find((s) => s.started_at)?.started_at;
       if (firstStarted && taskStartedAt.value === null) {
@@ -213,6 +237,9 @@ function reset() {
   // 清空当前任务状态，回到「尚未开始」。后端的历史 agent_runs 保留，store.taskId 清掉即可。
   stopPoll();
   notifiedDone = false;
+  stalePollCount = 0;
+  lastSeenProgress = 0;
+  lastSeenElapsed = 0;
   running.value = false;
   status.value = "";
   steps.value = [];

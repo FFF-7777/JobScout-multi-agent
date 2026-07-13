@@ -242,6 +242,12 @@ export const api = {
     http
       .get<MatchResult | null>(`/api/match/results/by-job/${jobId}`)
       .then((r) => r.data),
+  deleteResult: (id: number) =>
+    http.delete<{ ok: boolean; id: number }>(`/api/match/results/${id}`).then((r) => r.data),
+  batchDeleteResults: (ids: number[]) =>
+    http
+      .post<{ ok: boolean; deleted: number }>(`/api/match/results/batch-delete`, { result_ids: ids })
+      .then((r) => r.data),
 
   // P2#14 单/批量重试失败的匹配结果（不传 result_ids 则重试该 task 下所有 failed）
   retryMatchResults: (result_ids: number[] = [], task_id?: string) =>
@@ -292,6 +298,8 @@ export const api = {
 
   listReports: () => http.get<ReportItem[]>("/api/reports").then((r) => r.data),
   getReport: (id: number) => http.get<ReportItem>(`/api/reports/${id}`).then((r) => r.data),
+  deleteReport: (id: number) =>
+    http.delete<{ ok: boolean; id: number }>(`/api/reports/${id}`).then((r) => r.data),
   markdownUrl: (id: number) => `/api/reports/${id}/markdown`,
   excelUrl: (id: number) => `/api/reports/${id}/excel`,
 };

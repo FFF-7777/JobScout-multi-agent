@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import { api, type ReportItem } from "@/api";
 
@@ -41,6 +41,30 @@ function dlXlsx(id: number) {
   window.open(api.excelUrl(id), "_blank");
 }
 
+async function deleteReport(r: ReportItem, e: Event) {
+  // 阻止冒泡触发选中
+  e.stopPropagation();
+  try {
+    await ElMessageBox.confirm(
+      `确定删除报告「${r.title}」吗？此操作不可恢复。`,
+      "删除报告",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  try {
+    await api.deleteReport(r.id);
+    ElMessage.success("已删除");
+    if (current.value?.id === r.id) {
+      current.value = null;
+    }
+    await load();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "删除失败");
+  }
+}
+
 onMounted(() => {
   load();
   // 每 30s 自动拉取最新报告列表，让后台生成的报告自动出现
@@ -70,6 +94,7 @@ onUnmounted(() => {
         >
           <div class="ri-title">{{ r.title }}</div>
           <div class="ri-sub">{{ r.summary }}</div>
+          <button class="ri-del" type="button" title="删除" @click="deleteReport(r, $event)">×</button>
         </div>
         <el-empty v-if="!loading && reports.length === 0" description="暂无报告" />
       </div>
@@ -113,6 +138,35 @@ onUnmounted(() => {
 .ri-sub {
   color: #8a94a6;
   font-size: 12px;
+}
+.report-item {
+  position: relative;
+}
+.report-item:hover .ri-del {
+  opacity: 1;
+}
+.ri-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(20, 30, 50, 0.5);
+  color: #fff;
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.ri-del:hover {
+  background: #f56c6c;
 }
 .pv-head {
   display: flex;

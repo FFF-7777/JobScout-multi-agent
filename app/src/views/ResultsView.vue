@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { api, type MatchResult } from "@/api";
 import { useAppStore } from "@/stores/app";
 import JobDetailView from "@/views/JobDetailView.vue";
@@ -117,10 +117,53 @@ async function startPolling() {
 }
 
 const cities = computed(() => [...new Set(results.value.map((r) => r.city).filter(Boolean))]);
+const hasSelected = computed(() => selectedIds.value.length > 0);
 
 const failedCount = computed(
   () => results.value.filter((r) => r.status === "failed").length
 );
+
+async function deleteResult(row: MatchResult) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除「${row.company_name || "（无）"} · ${row.job_title || "（无）"}」的匹配结果吗？`,
+      "删除匹配结果",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  try {
+    await api.deleteResult(row.id);
+    ElMessage.success("已删除");
+    selectedIds.value = selectedIds.value.filter((x) => x !== row.id);
+    await loadResults();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "删除失败");
+  }
+}
+
+async function deleteSelected() {
+  if (!hasSelected.value) return;
+  const ids = [...selectedIds.value];
+  try {
+    await ElMessageBox.confirm(
+      `确定删除已选中的 ${ids.length} 个匹配结果吗？`,
+      "批量删除",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" }
+    );
+  } catch {
+    return;
+  }
+  try {
+    const res = await api.batchDeleteResults(ids);
+    ElMessage.success(`已删除 ${res.deleted} 个匹配结果`);
+    selectedIds.value = [];
+    await loadResults();
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "批量删除失败");
+  }
+}
 
 async function retryMatch(ids: number[]) {
   retrying.value = true;
@@ -329,6 +372,14 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
       >
         重试失败项（{{ failedCount }}）
       </el-button>
+      <el-button
+        type="danger"
+        plain
+        :disabled="!hasSelected"
+        @click="deleteSelected"
+      >
+        批量删除（{{ selectedIds.length }}）
+      </el-button>
       <el-button :type="results.length > 0 ? 'primary' : 'plain'" @click="exportExcel" :disabled="results.length === 0">
         导出 Excel
       </el-button>
@@ -496,6 +547,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
         <el-table-column label="操作" width="80">
           <template #default="{ row }">
             <el-button link type="primary" @click.stop="openDetail(row.job_id)">详情</el-button>
+            <el-button link type="danger" @click.stop="deleteResult(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>

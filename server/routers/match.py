@@ -87,6 +87,50 @@ class _RetryRequest(BaseModel):
     result_ids: list[int] = []
 
 
+@router.delete("/results/{result_id}")
+def delete_result(result_id: int, db: Session = Depends(get_db)):
+    """删除单条匹配结果（同时清理关联的 job_reports 与 item_runs）。"""
+    row = db.get(MatchResult, result_id)
+    if row is None:
+        raise HTTPException(404, "匹配结果不存在")
+    # 清理关联报告 + 单条执行记录
+    from models import AgentItemRun, JobReport
+    db.query(JobReport).filter(JobReport.match_result_id == result_id).delete()
+    db.query(AgentItemRun).filter(
+        AgentItemRun.task_id == row.task_id,
+        AgentItemRun.item_id == row.job_id,
+    ).delete()
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "id": result_id}
+
+
+@router.post("/results/batch-delete")
+def batch_delete_results(
+    req: _RetryRequest,
+    db: Session = Depends(get_db),
+):
+    """批量删除匹配结果（req.result_ids）。"""
+    if not req.result_ids:
+        raise HTTPException(400, "result_ids 不能为空")
+    from models import AgentItemRun, JobReport
+    rows = db.query(MatchResult).filter(MatchResult.id.in_(req.result_ids)).all()
+    if not rows:
+        raise HTTPException(404, "没有可删除的匹配结果")
+    job_ids = {r.job_id for r in rows}
+    task_ids = {r.task_id for r in rows if r.task_id}
+    db.query(JobReport).filter(JobReport.match_result_id.in_(req.result_ids)).delete(synchronize_session=False)
+    if task_ids:
+        db.query(AgentItemRun).filter(
+            AgentItemRun.task_id.in_(task_ids),
+            AgentItemRun.item_id.in_(job_ids),
+        ).delete(synchronize_session=False)
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return {"ok": True, "deleted": len(rows)}
+
+
 @router.post("/results/retry")
 def retry_results(
     req: _RetryRequest,

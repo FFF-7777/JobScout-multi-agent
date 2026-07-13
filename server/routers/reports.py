@@ -558,6 +558,17 @@ def get_report(report_id: int, db: Session = Depends(get_db)):
     return report
 
 
+@router.delete("/{report_id}")
+def delete_report(report_id: int, db: Session = Depends(get_db)):
+    """删除单条历史报告。"""
+    report = db.get(Report, report_id)
+    if report is None:
+        raise HTTPException(404, "报告不存在")
+    db.delete(report)
+    db.commit()
+    return {"ok": True, "id": report_id}
+
+
 @router.get("/{report_id}/markdown")
 def download_markdown(report_id: int, db: Session = Depends(get_db)):
     report = db.get(Report, report_id)

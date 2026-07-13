@@ -34,6 +34,21 @@ async function load() {
 function open(r: ReportItem) {
   current.value = r;
 }
+function reportType(r: ReportItem): "deep" | "standard" {
+  return /深度/.test(`${r.title} ${r.summary}`) ? "deep" : "standard";
+}
+function reportTypeLabel(r: ReportItem): string {
+  return reportType(r) === "deep" ? "深度分析" : "基础分析";
+}
+function formatDate(value?: string | null): string {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
 function dlMd(id: number) {
   window.open(api.markdownUrl(id), "_blank");
 }
@@ -80,35 +95,53 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
-    <div class="page-title">报告导出</div>
-    <div class="page-sub">查看历史分析报告，导出 Markdown 或 Excel 岗位表。</div>
+    <div class="page-title">分析报告</div>
+    <div class="page-sub">基础分析与深度分析分别保存，可独立查看和导出。</div>
 
     <div class="layout">
-      <div class="card list">
-        <div class="section-h" style="margin-top: 0">历史报告（{{ reports.length }}）</div>
+      <aside class="card list">
+        <div class="list-head">
+          <div>
+            <div class="section-h">历史版本</div>
+            <div class="list-count">{{ reports.length }} 份报告</div>
+          </div>
+        </div>
         <div
           v-for="r in reports"
           :key="r.id"
           :class="['report-item', { on: current?.id === r.id }]"
           @click="open(r)"
         >
+          <div class="ri-meta">
+            <span :class="['report-type', reportType(r)]">{{ reportTypeLabel(r) }}</span>
+            <span>{{ formatDate(r.created_at) }}</span>
+          </div>
           <div class="ri-title">{{ r.title }}</div>
           <div class="ri-sub">{{ r.summary }}</div>
-          <button class="ri-del" type="button" title="删除" @click="deleteReport(r, $event)">×</button>
+          <button class="ri-del" type="button" title="删除报告" aria-label="删除报告" @click="deleteReport(r, $event)">×</button>
         </div>
         <el-empty v-if="!loading && reports.length === 0" description="暂无报告" />
-      </div>
+      </aside>
 
-      <div class="card preview" v-if="current">
+      <main class="card preview" v-if="current">
         <div class="pv-head">
-          <b>{{ current.title }}</b>
-          <div style="display: flex; gap: 10px">
-            <el-button size="small" @click="dlMd(current.id)">导出 Markdown</el-button>
-            <el-button size="small" type="primary" @click="dlXlsx(current.id)">导出 Excel</el-button>
+          <div class="pv-identity">
+            <span :class="['report-type', reportType(current)]">{{ reportTypeLabel(current) }}</span>
+            <div>
+              <h2>{{ current.title }}</h2>
+              <p>{{ current.summary }}</p>
+            </div>
+          </div>
+          <div class="pv-actions">
+            <el-button @click="dlMd(current.id)">导出 Markdown</el-button>
+            <el-button type="primary" @click="dlXlsx(current.id)">导出 Excel</el-button>
           </div>
         </div>
-        <div class="md" v-html="renderMd(current.markdown_content)"></div>
-      </div>
+        <article class="md" v-html="renderMd(current.markdown_content)"></article>
+      </main>
+      <main v-else class="card preview empty-preview">
+        <el-empty description="选择左侧报告查看内容" />
+      </main>
     </div>
   </div>
 </template>
@@ -116,31 +149,80 @@ onUnmounted(() => {
 <style scoped>
 .layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 18px;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
 }
-.report-item {
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  margin-bottom: 6px;
+.list {
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 14px;
 }
-.report-item:hover {
-  background: #f5f7fb;
+.list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 6px 14px;
 }
-.report-item.on {
-  background: #eef3ff;
-}
-.ri-title {
-  font-weight: 600;
-  font-size: 14px;
-}
-.ri-sub {
-  color: #8a94a6;
-  font-size: 12px;
+.list-head .section-h { margin: 0; font-size: 17px; }
+.list-count { margin-top: 2px; color: #87909f; font-size: 12px; }
+.preview {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #e4e8ef;
+  box-shadow: 0 8px 30px rgba(25, 36, 54, 0.06);
 }
 .report-item {
   position: relative;
+  padding: 13px 36px 13px 13px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.report-item:hover {
+  background: #f8fafc;
+  border-color: #e3e8f0;
+}
+.report-item.on {
+  background: #f2f6ff;
+  border-color: #cbd9f8;
+  box-shadow: inset 3px 0 #356ae6;
+}
+.ri-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: #98a1af;
+  font-size: 11px;
+}
+.report-type {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.report-type.standard { background: #eef2f6; color: #526071; }
+.report-type.deep { background: #eaf0ff; color: #2857c5; }
+.ri-title {
+  color: #172033;
+  font-weight: 650;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.ri-sub {
+  margin-top: 4px;
+  color: #87909f;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .report-item:hover .ri-del {
   opacity: 1;
@@ -153,8 +235,8 @@ onUnmounted(() => {
   height: 22px;
   border: none;
   border-radius: 50%;
-  background: rgba(20, 30, 50, 0.5);
-  color: #fff;
+  background: transparent;
+  color: #87909f;
   font-size: 14px;
   line-height: 20px;
   cursor: pointer;
@@ -166,36 +248,56 @@ onUnmounted(() => {
   transition: opacity 0.15s, background 0.15s;
 }
 .ri-del:hover {
-  background: #f56c6c;
+  background: #fff0f0;
+  color: #c93636;
 }
 .pv-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  gap: 20px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #e8ebf0;
+  background: #fff;
 }
+.pv-identity { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.pv-identity h2 { margin: 0; color: #172033; font-size: 16px; line-height: 1.4; }
+.pv-identity p { margin: 3px 0 0; color: #87909f; font-size: 12px; }
+.pv-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.empty-preview { min-height: 420px; display: grid; place-items: center; }
 .md {
-  background: #fdfbf7;
-  padding: 24px 28px;
-  border-radius: 8px;
-  font-size: 15px;
-  line-height: 1.9;
-  max-height: 70vh;
+  max-width: 920px;
+  max-height: calc(100vh - 178px);
+  margin: 0 auto;
+  padding: 46px 56px 72px;
   overflow: auto;
+  background: #fff;
+  color: #263142;
+  font-size: 15px;
+  line-height: 1.78;
 }
-.md h1 { font-size: 22px; margin: 0 0 14px; color: #1d2129; }
-.md h2 { font-size: 18px; margin: 22px 0 10px; color: #1d2129; }
-.md h3 { font-size: 16px; margin: 18px 0 8px; color: #1d2129; }
-.md p { margin: 8px 0; }
-.md table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
-.md th, .md td { border: 1px solid #e4dcc8; padding: 8px 12px; text-align: left; }
-.md th { background: #f5ecd6; font-weight: 600; }
-.md code { background: #ede5d3; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
-.md blockquote { border-left: 4px solid #c9a84c; margin: 10px 0; padding: 8px 16px; background: #faf6eb; border-radius: 0 4px 4px 0; }
-.md hr { border: none; border-top: 1px solid #e4dcc8; margin: 18px 0; }
+.md :deep(h1) { margin: 0 0 10px; color: #101828; font-size: 30px; line-height: 1.25; letter-spacing: -0.02em; }
+.md :deep(h2) { margin: 40px 0 15px; padding-top: 4px; color: #172033; font-size: 21px; line-height: 1.35; }
+.md :deep(h3) { margin: 28px 0 10px; color: #273349; font-size: 16px; line-height: 1.4; }
+.md :deep(p) { margin: 9px 0; }
+.md :deep(strong) { color: #172033; font-weight: 700; }
+.md :deep(ul), .md :deep(ol) { margin: 9px 0 18px; padding-left: 22px; }
+.md :deep(li) { margin: 7px 0; padding-left: 3px; }
+.md :deep(table) { border-collapse: separate; border-spacing: 0; width: 100%; margin: 16px 0 24px; overflow: hidden; border: 1px solid #e3e8ef; border-radius: 9px; font-size: 13px; }
+.md :deep(th), .md :deep(td) { padding: 10px 12px; border-right: 1px solid #e8ecf2; border-bottom: 1px solid #e8ecf2; text-align: left; vertical-align: top; }
+.md :deep(th:last-child), .md :deep(td:last-child) { border-right: 0; }
+.md :deep(tr:last-child td) { border-bottom: 0; }
+.md :deep(th) { background: #f6f8fb; color: #445064; font-weight: 700; }
+.md :deep(code) { background: #f1f4f8; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+.md :deep(blockquote) { margin: 16px 0 22px; padding: 14px 17px; border: 1px solid #dce5fa; border-left: 3px solid #356ae6; border-radius: 8px; background: #f6f9ff; color: #344563; }
+.md :deep(blockquote p) { margin: 0; }
+.md :deep(hr) { border: none; border-top: 1px solid #e4e8ef; margin: 42px 0; }
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
   }
+  .list { position: static; max-height: none; }
+  .pv-head { align-items: flex-start; flex-direction: column; }
+  .md { max-height: none; padding: 32px 22px 54px; }
 }
 </style>

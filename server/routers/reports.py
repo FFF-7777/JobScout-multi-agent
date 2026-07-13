@@ -82,6 +82,8 @@ def generate_reports_batch(req: ReportGenerateRequest, db: Session = Depends(get
                 generated += 1
             except Exception as e:  # noqa: BLE001
                 errors.append({"result_id": p["result_id"], "error": str(e)})
+        if generated:
+            _rebuild_report_after_deep(req.match_result_ids, preferred_mode="standard")
         return {
             "mode": mode,
             "requested": len(req.match_result_ids),
@@ -385,13 +387,16 @@ def _run_report_task(task_id: str, match_result_ids: list[int], mode: str) -> No
 
     # Deep 报告完成后，重新聚合 Report 表的汇总 Markdown
     try:
-        _rebuild_report_after_deep(match_result_ids)
+        _rebuild_report_after_deep(match_result_ids, preferred_mode="deep")
     except Exception:  # noqa: BLE001
         pass  # 重建失败不阻塞主线
 
 
-def _rebuild_report_after_deep(match_result_ids: list[int]) -> None:
-    """深度报告生成后，用深度内容重新聚合同 task 的 Report 表 Markdown。"""
+def _rebuild_report_after_deep(
+    match_result_ids: list[int],
+    preferred_mode: str = "deep",
+) -> None:
+    """把本次选择的岗位聚合为一份独立历史报告，基础版与深度版互不覆盖。"""
     from schemas.job import JobProfile
     from schemas.match import MatchResultModel
     from schemas.resume import ResumeProfile
@@ -411,15 +416,10 @@ def _rebuild_report_after_deep(match_result_ids: list[int]) -> None:
         if not task_id:
             return
 
-        # 找对应的 Report 行
-        report_row = s.query(Report).filter(Report.task_id == task_id).first()
-        if report_row is None:
-            return
-
-        # 取该 task 下所有 match_result
+        # 只聚合本次用户选择的岗位，避免报告内容与选择范围不一致。
         all_mrs = (
             s.query(MatchResult)
-            .filter(MatchResult.task_id == task_id)
+            .filter(MatchResult.id.in_(match_result_ids))
             .order_by(MatchResult.score.desc())
             .all()
         )
@@ -454,22 +454,22 @@ def _rebuild_report_after_deep(match_result_ids: list[int]) -> None:
                 }
             )
             match = MatchResultModel.model_validate(mr.detail_json)
-            # 优先取 JobReport 表的 deep 报告，fallback 到 detail_json 的 report
+            # 按本次请求的报告类型读取，基础版和深度版不会相互覆盖。
             best_report: dict | None = None
             jr = (
                 s.query(JobReport)
                 .filter(
                     JobReport.match_result_id == mr.id,
-                    JobReport.mode == "deep",
+                    JobReport.mode == preferred_mode,
                 )
                 .order_by(JobReport.id.desc())
                 .first()
             )
             if jr and jr.report_json:
                 best_report = jr.report_json
-            else:
+            elif preferred_mode == "deep":
                 detail = mr.detail_json or {}
-                if detail.get("report"):
+                if (detail.get("report") or {}).get("mode") == "deep":
                     best_report = detail["report"]
             if not best_report:
                 continue
@@ -482,21 +482,22 @@ def _rebuild_report_after_deep(match_result_ids: list[int]) -> None:
         if not items:
             return
 
-        # 生成混合 Markdown
-        hybrid_md = report_agent.build_hybrid_report_markdown(resume_profile, items)
-        has_deep = any((it["report"]).get("mode") == "deep" for it in items)
-        deep_count = sum(1 for it in items if (it["report"]).get("mode") == "deep")
-        report_row.markdown_content = hybrid_md
-        report_row.title = (
-            f"岗位分析报告（{len(items)} 个岗位"
-            + (f"，{deep_count} 个深度分析" if has_deep else "")
-            + f"） - {resume_profile.name or '候选人'}"
+        markdown = (
+            report_agent.build_hybrid_report_markdown(resume_profile, items)
+            if preferred_mode == "deep"
+            else report_agent.build_standard_markdown(resume_profile, items)
         )
-        report_row.summary = (
-            f"共 {len(items)} 个岗位"
-            + (f"，{deep_count} 个含深度分析" if has_deep else "，基础报告")
+        label = "深度分析" if preferred_mode == "deep" else "基础分析"
+        report_row = Report(
+            resume_id=resume.id,
+            task_id=task_id,
+            title=f"岗位投递决策报告｜{label}（{len(items)} 个岗位） - {resume_profile.name or '候选人'}",
+            summary=f"{label} · 共 {len(items)} 个岗位 · 独立历史版本",
+            markdown_content=markdown,
         )
+        s.add(report_row)
         s.commit()
+        _prune_history_reports()
     finally:
         s.close()
 

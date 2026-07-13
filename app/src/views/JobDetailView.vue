@@ -105,16 +105,42 @@ const interviewList = computed(() => {
 });
 
 const genDeepBusy = ref(false);
+const deepTask = ref<{ status: string; total: number; done: number; failed: number; elapsed: number } | null>(null);
+const deepProgress = computed(() => {
+  if (!deepTask.value?.total) return 0;
+  return Math.round(((deepTask.value.done + deepTask.value.failed) / deepTask.value.total) * 100);
+});
+function fmtWait(seconds: number): string {
+  const value = Math.max(0, Math.round(seconds));
+  return value >= 60 ? `${Math.floor(value / 60)}分${value % 60}秒` : `${value}秒`;
+}
 async function genDeep() {
   if (!match.value?.id) return;
   genDeepBusy.value = true;
   try {
     const res = await api.generateReports([match.value.id], "deep");
-    if (res.generated > 0) {
-      ElMessage.success("已生成深度报告");
-      await load();
-    } else if (res.errors?.length) {
-      ElMessage.error("深度报告生成失败：" + JSON.stringify(res.errors[0]));
+    if (!("task_id" in res)) return;
+    const startedAt = Date.now();
+    deepTask.value = { status: res.status, total: res.total_items, done: 0, failed: 0, elapsed: 0 };
+    while (Date.now() - startedAt < 15 * 60 * 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const task = await api.getReportTask(res.task_id);
+      deepTask.value = {
+        status: task.status,
+        total: task.total,
+        done: task.done,
+        failed: task.failed,
+        elapsed: (Date.now() - startedAt) / 1000,
+      };
+      if (["done", "partial", "failed"].includes(task.status)) {
+        if (task.done) {
+          ElMessage.success("深度报告已生成，并保存到报告导出页");
+          await load();
+        } else {
+          ElMessage.error("深度报告生成失败");
+        }
+        break;
+      }
     }
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "生成失败");
@@ -223,18 +249,18 @@ function gotoResults() {
           <span class="role">{{ job.job_title || "（待解析）" }}</span>
         </div>
         <div class="hero-tags">
-          <el-tag v-if="job.city" size="default" effect="plain">📍 {{ job.city }}</el-tag>
+          <el-tag v-if="job.city" size="default" effect="plain">{{ job.city }}</el-tag>
           <el-tag v-if="job.salary" size="default" effect="plain" type="success">
-            💰 {{ job.salary }}
+            {{ job.salary }}
           </el-tag>
           <el-tag v-if="job.analysis?.internship_days_per_week" size="default" effect="plain" type="primary">
-            📅 每周 {{ job.analysis.internship_days_per_week }} 天
+            每周 {{ job.analysis.internship_days_per_week }} 天
           </el-tag>
           <el-tag v-if="job.analysis?.internship_duration" size="default" effect="plain" type="primary">
-            ⏱️ {{ job.analysis.internship_duration }}
+            {{ job.analysis.internship_duration }}
           </el-tag>
           <el-tag v-if="job.analysis?.graduation_years?.length" size="default" effect="plain" type="primary">
-            🎓 {{ job.analysis.graduation_years.map((y: number) => y + '届').join(' / ') }}
+            {{ job.analysis.graduation_years.map((y: number) => y + '届').join(' / ') }}
           </el-tag>
           <el-tag v-if="job.source" size="default" effect="plain" type="info">
             来源：{{ job.source }}
@@ -247,7 +273,7 @@ function gotoResults() {
             style="cursor: pointer"
             @click="openUrl(job.job_url)"
           >
-            🔗 打开原链接
+            打开原链接
           </el-tag>
         </div>
       </div>
@@ -255,7 +281,7 @@ function gotoResults() {
       <!-- ====== 岗位信息区（mode=info / all）====== -->
       <template v-if="showInfo">
         <div v-if="job.analysis" class="sub-card">
-          <div class="sub-head">📋 岗位解析</div>
+          <div class="sub-head">岗位解析</div>
           <div class="chips" v-if="job.analysis.required_skills?.length">
             <span class="chip-title">必备技能</span>
             <el-tag
@@ -320,7 +346,7 @@ function gotoResults() {
         </div>
 
         <div class="sub-card">
-          <div class="sub-head">📄 JD 原文</div>
+          <div class="sub-head">JD 原文</div>
           <pre class="jd">{{ job.jd_text }}</pre>
         </div>
       </template>
@@ -328,7 +354,7 @@ function gotoResults() {
       <!-- ====== 分析结果区（mode=analysis / all）====== -->
       <template v-if="showAnalysis">
         <div v-if="!match" class="sub-card">
-          <div class="sub-head">🎯 分析结果</div>
+          <div class="sub-head">分析结果</div>
           <div class="empty-tip">
             该岗位暂无分析结果。请先到「岗位导入」页选中该岗位 + 简历后跑「开始分析」。
           </div>
@@ -366,21 +392,38 @@ function gotoResults() {
             <div class="decision-summary">{{ appDecision?.summary || match.recommendation }}</div>
           </div>
 
+          <div v-if="deepTask" class="deep-progress" aria-live="polite">
+            <div class="deep-progress-head">
+              <div>
+                <div class="deep-progress-label">深度报告</div>
+                <b>{{ ['done', 'partial'].includes(deepTask.status) ? '分析完成' : '正在生成针对性投递与面试方案' }}</b>
+              </div>
+              <span>{{ deepProgress }}%</span>
+            </div>
+            <el-progress :percentage="deepProgress" :stroke-width="7" :show-text="false" />
+            <div class="deep-progress-meta">
+              <span>{{ deepTask.done }} / {{ deepTask.total }} 已完成</span>
+              <span>已等待 {{ fmtWait(deepTask.elapsed) }}</span>
+              <span v-if="!['done', 'partial'].includes(deepTask.status)">预计剩余约 {{ fmtWait(Math.max(1, 45 - deepTask.elapsed)) }}</span>
+              <span v-else>已保存到报告导出页</span>
+            </div>
+          </div>
+
           <!-- ═══ 第二层：核心三模块 ═══ -->
           <div class="core-modules">
             <!-- 核心优势 -->
             <div class="module-card module-success">
-              <div class="module-head">✅ 核心优势</div>
+              <div class="module-head">核心优势</div>
               <div v-if="topStrengths.length === 0" class="module-empty">暂无明确优势</div>
               <div v-for="(s, i) in topStrengths" :key="i" class="module-item">
                 <div class="mod-title">{{ s.title }}</div>
-                <div class="mod-evidence" v-if="s.resume_evidence">📄 {{ s.resume_evidence }}</div>
-                <div class="mod-evidence" v-if="s.job_relevance">🎯 {{ s.job_relevance }}</div>
+                <div class="mod-evidence" v-if="s.resume_evidence"><span>简历证据</span>{{ s.resume_evidence }}</div>
+                <div class="mod-evidence" v-if="s.job_relevance"><span>岗位关联</span>{{ s.job_relevance }}</div>
               </div>
             </div>
             <!-- 主要短板 -->
             <div class="module-card module-warning">
-              <div class="module-head">⚠️ 主要短板</div>
+              <div class="module-head">关键缺口</div>
               <div v-if="mainGaps.length === 0" class="module-empty">暂无重大缺口</div>
               <div v-for="(g, i) in mainGaps" :key="i" class="module-item">
                 <div class="mod-title">
@@ -391,17 +434,17 @@ function gotoResults() {
                   </el-tag>
                   {{ g.title }}
                 </div>
-                <div class="mod-evidence" v-if="g.impact">💡 {{ g.impact }}</div>
+                <div class="mod-evidence" v-if="g.impact"><span>影响</span>{{ g.impact }}</div>
                 <div class="mod-action" v-if="g.action">
-                  <span v-if="g.short_term_fixable">✅ 可短期弥补：</span>
-                  <span v-else>📆 建议规划：</span>
+                  <span v-if="g.short_term_fixable">投递前可修正</span>
+                  <span v-else>需要长期补足</span>
                   {{ g.action }}
                 </div>
               </div>
             </div>
             <!-- 投递前行动 -->
             <div v-if="nextActions.length > 0" class="module-card module-action">
-              <div class="module-head">📌 投递前行动</div>
+              <div class="module-head">投递前行动</div>
               <div v-for="(a, i) in nextActions" :key="i" class="module-item">
                 <span class="action-num">{{ i + 1 }}.</span> {{ a }}
               </div>
@@ -410,12 +453,12 @@ function gotoResults() {
 
           <!-- ═══ 第三层：可折叠详细证据 ═══ -->
           <div class="detail-block">
-            <div class="detail-block-title">📋 详细证据 <span class="hint-muted">（点击展开）</span></div>
+            <div class="detail-block-title">详细证据 <span class="hint-muted">按需展开查看</span></div>
 
             <!-- 硬条件预筛 -->
             <div v-if="hardConditionResult?.items?.length" class="fold-card" :class="{ open: openSections['硬条件'] }">
               <div class="fold-head" @click="toggleSection('硬条件')">
-                🚦 硬条件预筛
+                硬条件预筛
                 <span v-if="hardConditionResult.passed" class="hard-pass-tag">全部通过</span>
                 <span v-else class="hard-fail-tag">{{ hardConditionResult.hard_failures?.length || 0 }} 项不通过</span>
                 <el-icon class="fold-icon" :class="{ rotated: openSections['硬条件'] }">
@@ -426,7 +469,7 @@ function gotoResults() {
                 <div class="hard-cond-list">
                   <div v-for="item in hardConditionResult.items" :key="item.name" class="hard-cond-item"
                     :class="item.status === 'pass' ? 'hc-pass' : 'hc-fail'">
-                    <span class="hc-icon">{{ item.status === 'pass' ? '✅' : '❌' }}</span>
+                    <span class="hc-icon">{{ item.status === 'pass' ? '通过' : '不通过' }}</span>
                     <span class="hc-name">{{ item.name }}</span>
                     <span class="hc-evidence">简历：{{ item.resume_evidence }}</span>
                     <span class="hc-requirement">岗位：{{ item.job_requirement }}</span>
@@ -438,7 +481,7 @@ function gotoResults() {
             <!-- 五维评分 -->
             <div class="fold-card" :class="{ open: openSections['五维评分'] }">
               <div class="fold-head" @click="toggleSection('五维评分')">
-                📊 五维评分
+                五维评分
                 <el-icon class="fold-icon" :class="{ rotated: openSections['五维评分'] }">
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
                 </el-icon>
@@ -468,7 +511,7 @@ function gotoResults() {
             <!-- 完整匹配点/缺口 -->
             <div class="fold-card" :class="{ open: openSections['完整匹配点'] }">
               <div class="fold-head" @click="toggleSection('完整匹配点')">
-                🔍 完整匹配点与缺口（{{ (match.matched_points?.length || 0) + (match.missing_points?.length || 0) }} 项）
+                完整匹配点与缺口（{{ (match.matched_points?.length || 0) + (match.missing_points?.length || 0) }} 项）
                 <el-icon class="fold-icon" :class="{ rotated: openSections['完整匹配点'] }">
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
                 </el-icon>
@@ -476,11 +519,11 @@ function gotoResults() {
               <div v-show="openSections['完整匹配点']" class="fold-body">
                 <div class="grid2">
                   <div class="sub-card success" style="margin:0">
-                    <div class="sub-head">✅ 匹配点（{{ match.matched_points?.length || 0 }}）</div>
+                    <div class="sub-head">匹配点（{{ match.matched_points?.length || 0 }}）</div>
                     <ul><li v-for="p in match.matched_points" :key="p">{{ p }}</li></ul>
                   </div>
                   <div class="sub-card warning" style="margin:0">
-                    <div class="sub-head">⚠️ 缺口（{{ match.missing_points?.length || 0 }}）</div>
+                    <div class="sub-head">缺口（{{ match.missing_points?.length || 0 }}）</div>
                     <ul><li v-for="p in match.missing_points" :key="p">{{ p }}</li></ul>
                   </div>
                 </div>
@@ -490,7 +533,7 @@ function gotoResults() {
             <!-- 风险提示 -->
             <div v-if="match?.risk_notes?.length || report?.risks?.length" class="fold-card" :class="{ open: openSections['风险提示'] }">
               <div class="fold-head" @click="toggleSection('风险提示')">
-                🚩 风险提示
+                风险提示
                 <el-icon class="fold-icon" :class="{ rotated: openSections['风险提示'] }">
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
                 </el-icon>
@@ -507,7 +550,7 @@ function gotoResults() {
             <!-- 面试准备 -->
             <div v-if="report" class="fold-card" :class="{ open: openSections['面试准备'] }">
               <div class="fold-head" @click="toggleSection('面试准备')">
-                💬 {{ isDeep ? '面试可能问题' : '面试准备重点' }}
+                {{ isDeep ? '深度面试策略' : '面试准备重点' }}
                 <el-icon class="fold-icon" :class="{ rotated: openSections['面试准备'] }">
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
                 </el-icon>
@@ -520,7 +563,7 @@ function gotoResults() {
                     </el-tag>
                     <el-button v-if="!isDeep" size="small" type="primary" plain
                       style="margin-left:auto" :loading="genDeepBusy" @click="genDeep">
-                      🧠 生成深度报告
+                      生成深度报告
                     </el-button>
                   </div>
                   <div class="rec-summary">
@@ -528,21 +571,51 @@ function gotoResults() {
                     <span class="rec-divider">·</span>
                     <span>{{ report.priority }}</span>
                   </div>
+                  <p v-if="report.executive_summary" class="executive-summary">{{ report.executive_summary }}</p>
+                  <div v-if="report.decision_basis?.length" class="report-section">
+                    <div class="sub-head" style="font-size:14px">决策依据</div>
+                    <ol><li v-for="item in report.decision_basis" :key="item">{{ item }}</li></ol>
+                  </div>
                   <ul v-if="report.reasons?.length">
                     <li v-for="r in report.reasons" :key="r">{{ r }}</li>
                   </ul>
-                  <ol v-if="interviewList.length">
+                  <div v-if="report.interview_guides?.length" class="interview-guides">
+                    <article v-for="(guide, index) in report.interview_guides" :key="index" class="interview-guide">
+                      <div class="guide-number">{{ index + 1 }}</div>
+                      <div>
+                        <h4>{{ guide.question }}</h4>
+                        <dl>
+                          <div><dt>考察意图</dt><dd>{{ guide.why_asked }}</dd></div>
+                          <div><dt>回答框架</dt><dd>{{ guide.answer_framework }}</dd></div>
+                          <div><dt>可用证据</dt><dd>{{ guide.evidence }}</dd></div>
+                        </dl>
+                      </div>
+                    </article>
+                  </div>
+                  <ol v-else-if="interviewList.length">
                     <li v-for="q in interviewList" :key="q">{{ q }}</li>
                   </ol>
+                  <div v-if="report.resume_rewrites?.length" class="report-section">
+                    <div class="sub-head" style="font-size:14px">简历定向改写</div>
+                    <ul><li v-for="item in report.resume_rewrites" :key="item">{{ item }}</li></ul>
+                  </div>
                   <div v-if="report.project_talking_points?.length" style="margin-top:12px">
-                    <div class="sub-head" style="font-size:14px">🎤 项目讲解重点</div>
+                    <div class="sub-head" style="font-size:14px">项目讲解重点</div>
                     <ul><li v-for="q in report.project_talking_points" :key="q">{{ q }}</li></ul>
                   </div>
                   <div v-if="report.boss_greeting || report.hr_message" class="grid2" style="margin-top:12px">
-                    <div class="sub-card" style="margin:0"><div class="sub-head">👋 BOSS 打招呼</div>
+                    <div class="sub-card" style="margin:0"><div class="sub-head">BOSS 打招呼</div>
                       <div class="quote">{{ report.boss_greeting }}</div></div>
-                    <div class="sub-card" style="margin:0"><div class="sub-head">✉️ HR 私信</div>
+                    <div class="sub-card" style="margin:0"><div class="sub-head">HR 私信</div>
                       <div class="quote">{{ report.hr_message }}</div></div>
+                  </div>
+                  <div v-if="report.questions_to_ask?.length" class="report-section">
+                    <div class="sub-head" style="font-size:14px">建议反问面试官</div>
+                    <ul><li v-for="item in report.questions_to_ask" :key="item">{{ item }}</li></ul>
+                  </div>
+                  <div v-if="report.action_plan?.length" class="report-section">
+                    <div class="sub-head" style="font-size:14px">行动清单</div>
+                    <ol><li v-for="item in report.action_plan" :key="item">{{ item }}</li></ol>
                   </div>
                 </div>
               </div>
@@ -551,7 +624,7 @@ function gotoResults() {
             <!-- 原始 JD -->
             <div class="fold-card" :class="{ open: openSections['原始JD'] }">
               <div class="fold-head" @click="toggleSection('原始JD')">
-                📄 岗位原始 JD
+                岗位原始 JD
                 <el-icon class="fold-icon" :class="{ rotated: openSections['原始JD'] }">
                   <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
                 </el-icon>
@@ -563,12 +636,6 @@ function gotoResults() {
           </div>
         </template>
       </template>
-
-      <!-- 底部：岗位原始 JD 原文（仅 analysis 模式显示在最后，info 模式在上面已经显示过） -->
-      <div v-if="showAnalysis" class="sub-card jd-block">
-        <div class="sub-head">📄 岗位原始 JD</div>
-        <pre class="jd">{{ job.jd_text }}</pre>
-      </div>
 
       <!-- 底部操作：info 模式跳推荐结果；analysis 模式跳 JobsView 弹窗 -->
       <div v-if="embedded" class="big-card-foot">
@@ -839,22 +906,24 @@ ol {
 
 /* ═══ 决策卡 ═══ */
 .decision-card {
-  background: linear-gradient(135deg, #f0f5ff 0%, #e8f0fe 100%);
-  border: 1px solid #d6e4ff;
+  background: #ffffff;
+  border: 1px solid #dfe5ee;
+  border-top: 3px solid #356ae6;
   border-radius: 12px;
-  padding: 20px 24px;
+  padding: 22px 24px 20px;
   margin: 18px 0;
+  box-shadow: 0 5px 18px rgba(27, 39, 59, 0.05);
 }
-.decision-card.decision-skip { background: linear-gradient(135deg, #fff5f5 0%, #fee 100%); border-color: #fcc; }
-.decision-card.decision-selective_apply { background: linear-gradient(135deg, #fffbe6 0%, #fff8d6 100%); border-color: #ffe58f; }
+.decision-card.decision-skip { background: #fff; border-color: #eadede; border-top-color: #c94747; }
+.decision-card.decision-selective_apply { background: #fff; border-color: #e8e1d2; border-top-color: #c78a2c; }
 .decision-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; }
 .decision-left { display: flex; align-items: center; gap: 16px; }
 .decision-badge {
-  background: #1d7afa; color: #fff; padding: 4px 16px; border-radius: 20px;
-  font-weight: 700; font-size: 18px; white-space: nowrap;
+  background: #eaf0ff; color: #2857c5; padding: 5px 12px; border-radius: 7px;
+  font-weight: 700; font-size: 15px; white-space: nowrap;
 }
-.decision-skip .decision-badge { background: #f5222d; }
-.decision-selective_apply .decision-badge { background: #faad14; color: #1f2733; }
+.decision-skip .decision-badge { background: #fff0f0; color: #b93838; }
+.decision-selective_apply .decision-badge { background: #fff6e6; color: #9a6417; }
 .decision-meta { display: flex; align-items: baseline; gap: 4px; }
 .decision-score { font-size: 28px; font-weight: 900; }
 .decision-level { color: #5a6472; font-size: 16px; }
@@ -863,24 +932,49 @@ ol {
 .decision-career strong { color: #1f2733; }
 .decision-career .career-detail { color: #8a94a6; }
 .decision-confidence { color: #8a94a6; font-size: 12px; }
-.decision-summary { margin-top: 12px; padding-top: 12px; border-top: 1px dashed #d6e4ff; color: #3a5f8a; font-size: 15px; line-height: 1.6; }
+.decision-summary { margin-top: 14px; padding-top: 14px; border-top: 1px solid #e7ebf1; color: #344054; font-size: 15px; line-height: 1.65; }
 .hint-icon { cursor: help; margin-left: 4px; color: #8a94a6; }
 
 /* ═══ 核心三模块 ═══ */
 .core-modules { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
-.module-card { background: #fafbfd; border-radius: 10px; padding: 16px 18px; border: 1px solid #ebeef5; }
+.module-card { background: #ffffff; border-radius: 10px; padding: 18px 20px; border: 1px solid #e1e6ed; }
 .module-card.module-action { grid-column: 1 / -1; }
 .module-head { font-size: 15px; font-weight: 700; color: #1f2733; margin-bottom: 10px; }
 .module-empty { color: #8a94a6; font-size: 13px; font-style: italic; }
 .module-item { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #f0f2f5; }
 .module-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .mod-title { font-size: 14px; font-weight: 600; color: #2c3340; margin-bottom: 4px; }
-.mod-evidence { font-size: 13px; color: #5a6472; line-height: 1.6; margin: 2px 0; }
-.mod-action { font-size: 13px; color: #3a6ff7; line-height: 1.6; margin-top: 4px; }
+.mod-evidence { display: grid; grid-template-columns: 64px 1fr; gap: 7px; font-size: 13px; color: #5a6472; line-height: 1.65; margin: 5px 0; }
+.mod-evidence span { color: #8a94a6; font-size: 12px; font-weight: 650; }
+.mod-action { font-size: 13px; color: #344054; line-height: 1.65; margin-top: 7px; padding: 9px 10px; background: #f6f8fb; border-radius: 6px; }
+.mod-action span { display: block; margin-bottom: 2px; color: #667085; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .action-num { font-weight: 700; color: #3a6ff7; }
-.module-success { border-left: 4px solid #2fae5f; }
-.module-warning { border-left: 4px solid #f7861b; }
-.module-action { border-left: 4px solid #3a6ff7; }
+.module-success { border-top: 2px solid #55a476; }
+.module-warning { border-top: 2px solid #c58a3b; }
+.module-action { border-top: 2px solid #5279d8; }
+
+.deep-progress {
+  margin: 16px 0;
+  padding: 16px 18px;
+  border: 1px solid #dce4f2;
+  border-radius: 10px;
+  background: #f8faff;
+}
+.deep-progress-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 10px; }
+.deep-progress-label { margin-bottom: 2px; color: #697386; font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.deep-progress-head > span { color: #2857c5; font-size: 20px; font-weight: 750; }
+.deep-progress-meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 10px; color: #697386; font-size: 12px; }
+
+.executive-summary { margin: 12px 0 18px; color: #344054; line-height: 1.75; }
+.report-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e8ebf0; }
+.interview-guides { display: grid; gap: 10px; margin-top: 14px; }
+.interview-guide { display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 14px; border: 1px solid #e2e7ef; border-radius: 8px; background: #fff; }
+.guide-number { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #eaf0ff; color: #2857c5; font-size: 12px; font-weight: 700; }
+.interview-guide h4 { margin: 1px 0 10px; color: #202b3d; font-size: 14px; }
+.interview-guide dl { margin: 0; }
+.interview-guide dl > div { display: grid; grid-template-columns: 66px 1fr; gap: 8px; margin: 6px 0; font-size: 13px; line-height: 1.6; }
+.interview-guide dt { color: #7a8493; font-weight: 650; }
+.interview-guide dd { margin: 0; color: #465266; }
 
 /* ═══ 折叠详情 ═══ */
 .detail-block { margin: 16px 0; }

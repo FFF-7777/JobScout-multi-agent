@@ -665,27 +665,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         # Top-K 只在 full 模式里取（summary 模式岗不参与 Top-K 深度复核）
         full_top_ids = {jid for jid in top_ids if jid in full_ids}
         deep_ids = full_top_ids | full_ids
-        if not deep_ids:
-            # 没有任何 full 模式岗位：跳过 deep 阶段，所有岗位用 quick 结果
-            _update_run(
-                task_id,
-                "Match Agent",
-                status="success",
-                progress=100,
-                summary=(
-                    f"完成 {len(results)} 个岗位评分，最高 {top} 分"
-                    f"（全部 summary 模式，跳过深度阶段以节省时间）"
-                ),
-                eta_seconds=0,
-                eta_low=0,
-                eta_high=0,
-                total_items=total,
-                completed_items=total,
-                failed_items=phase_failed["quick"] + phase_failed["deep"],
-                in_flight_items=[],
-                current_item="",
-            )
-        else:
+        if deep_ids:
             deep_targets = [{"job_id": jid} for jid in deep_ids]
             for t in deep_targets:
                 upsert_item_run(
@@ -903,6 +883,31 @@ def create_task(resume_id: int, job_ids: list[int]) -> str:
     return task_id
 
 
+def _fail_unfinished_runs(task_id: str, error: str) -> None:
+    """工作流发生未预期异常时结束未完成节点，避免任务永久显示为运行中。"""
+    db = SessionLocal()
+    try:
+        runs = (
+            db.query(AgentRun)
+            .filter(
+                AgentRun.task_id == task_id,
+                AgentRun.status.in_(["pending", "running"]),
+            )
+            .all()
+        )
+        now = _utcnow()
+        for run in runs:
+            run.status = "failed"
+            run.progress = 100
+            run.error_message = f"工作流异常：{error}"
+            if run.started_at is None:
+                run.started_at = now
+            run.finished_at = now
+        db.commit()
+    finally:
+        db.close()
+
+
 def run_workflow(task_id: str, resume_id: int, job_ids: list[int]) -> None:
     """同步执行整个工作流（供后台线程调用）。"""
     state: JobScoutState = {
@@ -924,3 +929,5 @@ def run_workflow(task_id: str, resume_id: int, job_ids: list[int]) -> None:
                 error="用户中止",
                 finish=True,
             )
+    except Exception as exc:  # noqa: BLE001
+        _fail_unfinished_runs(task_id, str(exc))

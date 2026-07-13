@@ -217,6 +217,37 @@ const paginated = computed(() => {
 
 // 深度报告后台任务轮询定时器
 let deepPollTimer: number | undefined;
+const deepTask = ref<{
+  taskId: string;
+  status: string;
+  total: number;
+  done: number;
+  failed: number;
+  startedAt: number;
+  elapsed: number;
+} | null>(null);
+
+const deepProgress = computed(() => {
+  const task = deepTask.value;
+  if (!task?.total) return 0;
+  return Math.min(100, Math.round(((task.done + task.failed) / task.total) * 100));
+});
+const deepEta = computed(() => {
+  const task = deepTask.value;
+  if (!task) return 0;
+  const completed = task.done + task.failed;
+  const remaining = Math.max(0, task.total - completed);
+  if (!remaining) return 0;
+  const perItem = completed > 0 ? task.elapsed / completed : 45;
+  return Math.max(1, Math.round(perItem * remaining));
+});
+
+function fmtTime(seconds: number): string {
+  const value = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(value / 60);
+  const rest = value % 60;
+  return minutes ? `${minutes}分${rest.toString().padStart(2, "0")}秒` : `${rest}秒`;
+}
 function stopDeepPoll() {
   if (deepPollTimer !== undefined) {
     clearInterval(deepPollTimer);
@@ -234,10 +265,20 @@ function _deepTimeout(total: number): number {
 async function pollDeepTask(taskId: string, total: number) {
   const start = Date.now();
   const timeout = _deepTimeout(total);
+  deepTask.value = { taskId, status: "queued", total, done: 0, failed: 0, startedAt: start, elapsed: 0 };
   while (Date.now() - start < timeout) {
     await new Promise((r) => setTimeout(r, 1500));
     try {
       const t = await api.getReportTask(taskId);
+      deepTask.value = {
+        taskId,
+        status: t.status,
+        total: t.total,
+        done: t.done,
+        failed: t.failed,
+        startedAt: start,
+        elapsed: (Date.now() - start) / 1000,
+      };
       if (t.status === "done" || t.status === "partial") {
         const ok = t.done;
         const fail = t.failed;
@@ -254,6 +295,7 @@ async function pollDeepTask(taskId: string, total: number) {
   }
   stopDeepPoll();
   const mins = Math.round(timeout / 60000);
+  if (deepTask.value) deepTask.value.status = "timeout";
   ElMessage.warning(`深度报告生成超时（>${mins}min），请稍后刷新查看`);
 }
 
@@ -328,6 +370,31 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
       :title="`匹配进行中，结果持续生成（已完成 ${results.length} 个）`"
       description="下方列表会随 Match Agent 完成自动刷新；报告可在本页按需生成，无需等待全部岗位结束。"
     />
+
+    <section v-if="deepTask" class="report-progress" aria-live="polite">
+      <div class="report-progress-head">
+        <div>
+          <div class="report-progress-kicker">深度报告生成</div>
+          <div class="report-progress-title">
+            {{ deepTask.status === 'done' ? '分析已完成' : deepTask.status === 'partial' ? '部分完成' : '正在逐项分析岗位' }}
+          </div>
+        </div>
+        <div class="report-progress-percent">{{ deepProgress }}%</div>
+      </div>
+      <el-progress
+        :percentage="deepProgress"
+        :stroke-width="8"
+        :show-text="false"
+        :status="deepTask.status === 'partial' ? 'warning' : deepTask.status === 'done' ? 'success' : undefined"
+      />
+      <div class="report-progress-stats">
+        <span><b>{{ deepTask.done }}</b> / {{ deepTask.total }} 已完成</span>
+        <span v-if="deepTask.failed"><b>{{ deepTask.failed }}</b> 项失败</span>
+        <span>已等待 {{ fmtTime(deepTask.elapsed) }}</span>
+        <span v-if="!['done', 'partial'].includes(deepTask.status)">预计剩余约 {{ fmtTime(deepEta) }}</span>
+        <span v-else>报告已保存到“报告导出”页</span>
+      </div>
+    </section>
 
     <div class="card filters">
       <el-select v-model="cityFilter" clearable placeholder="城市" style="width: 130px">
@@ -419,7 +486,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
               </div>
               <!-- 核心优势 -->
               <div v-if="topStrengths(row).length" class="expand-section">
-                <span class="expand-label" style="color: #2fae5f">✅ 核心优势</span>
+                <span class="expand-label" style="color: #28784a">核心优势</span>
                 <div v-for="(s, i) in topStrengths(row)" :key="i" class="expand-item">
                   <b>{{ s.title }}</b>
                   <span v-if="s.job_relevance" class="expand-muted"> — {{ s.job_relevance }}</span>
@@ -427,7 +494,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
               </div>
               <!-- 主要短板 -->
               <div v-if="mainGaps(row).length" class="expand-section">
-                <span class="expand-label" style="color: #f7861b">⚠️ 主要短板</span>
+                <span class="expand-label" style="color: #9a6417">关键缺口</span>
                 <div v-for="(g, i) in mainGaps(row)" :key="i" class="expand-item">
                   <el-tag size="small"
                     :type="g.severity === 'fatal' ? 'danger' : g.severity === 'major' ? 'warning' : 'info'"
@@ -440,7 +507,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
               </div>
               <!-- 投递前行动 -->
               <div v-if="nextActions(row).length" class="expand-section">
-                <span class="expand-label" style="color: #3a6ff7">📌 投递前行动</span>
+                <span class="expand-label" style="color: #2857c5">投递前行动</span>
                 <div v-for="(a, i) in nextActions(row)" :key="i" class="expand-item">
                   <span style="color: #3a6ff7; font-weight: 700">{{ i + 1 }}.</span> {{ a }}
                 </div>
@@ -449,14 +516,14 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
               <div v-if="!topStrengths(row).length && !mainGaps(row).length" class="expand-section">
                 <div class="expand-grid">
                   <div>
-                    <span class="expand-label" style="color: #2fae5f">✅ 匹配点</span>
+                    <span class="expand-label" style="color: #28784a">匹配点</span>
                     <ul v-if="row.matched_points?.length">
                       <li v-for="p in row.matched_points" :key="p">{{ p }}</li>
                     </ul>
                     <span v-else class="expand-muted">（无）</span>
                   </div>
                   <div>
-                    <span class="expand-label" style="color: #f7861b">⚠️ 缺口</span>
+                    <span class="expand-label" style="color: #9a6417">缺口</span>
                     <ul v-if="row.missing_points?.length">
                       <li v-for="p in row.missing_points" :key="p">{{ p }}</li>
                     </ul>
@@ -589,6 +656,47 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
 </template>
 
 <style scoped>
+.report-progress {
+  margin-bottom: 16px;
+  padding: 18px 20px;
+  background: #fff;
+  border: 1px solid #dfe5ee;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(28, 39, 57, 0.05);
+}
+.report-progress-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.report-progress-kicker {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.report-progress-title {
+  margin-top: 2px;
+  color: #172033;
+  font-size: 17px;
+  font-weight: 700;
+}
+.report-progress-percent {
+  color: #245bdb;
+  font-size: 22px;
+  font-weight: 750;
+}
+.report-progress-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-top: 12px;
+  color: #667085;
+  font-size: 13px;
+}
+.report-progress-stats b { color: #172033; }
 .filters {
   display: flex;
   gap: 12px;
@@ -683,7 +791,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
 .detail-modal {
   position: relative;
   width: 100%;
-  max-width: 980px;
+  max-width: 1180px;
   background: transparent;
   border-radius: 16px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);

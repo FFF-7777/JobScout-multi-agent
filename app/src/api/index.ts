@@ -121,6 +121,7 @@ export interface ReportItem {
   title: string;
   summary: string;
   markdown_content: string;
+  created_at: string | null;
 }
 
 export interface ResumeSummary {
@@ -278,7 +279,15 @@ export const api = {
   // 深度报告后台任务进度轮询
   getReportTask: (taskId: string) =>
     http
-      .get<{ task_id: string; status: string; total: number; done: number; failed: number }>(
+      .get<{
+        task_id: string;
+        status: string;
+        total: number;
+        done: number;
+        failed: number;
+        created_at: string | null;
+        finished_at: string | null;
+      }>(
         `/api/reports/tasks/${taskId}`
       )
       .then((r) => r.data),

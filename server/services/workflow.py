@@ -379,6 +379,8 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
                 job.job_title = job.job_title or profile.job_title
                 job.city = job.city or profile.city
                 job.salary = job.salary or profile.salary
+                job.parse_status = "success"
+                job.parse_error = ""
                 existing = db.query(JobAnalysis).filter(JobAnalysis.job_id == jid).first()
                 if existing is None:
                     db.add(

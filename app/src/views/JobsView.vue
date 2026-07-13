@@ -21,8 +21,7 @@ const jobs = ref<Job[]>([]);
 const selectedIds = ref<number[]>([]);
 // 行级 loading：行 ID -> 是否在解析
 const analyzingIds = ref<Set<number>>(new Set());
-// 深度分析无数量上限（后端 full_mode_limit=0），但每个深度分析会额外把简历原文（最长 8000 字）塞进 LLM prompt：
-// token 消耗与单次耗时都明显更高。下方顶部状态条会实时提示当前数量与代价。
+// 深度分析无数量上限
 // #42：导入后后台自动解析，轮询 parse_status 直到全部完成
 const parsePollTimer = ref<number | null>(null);
 

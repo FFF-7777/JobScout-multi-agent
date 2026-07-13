@@ -194,20 +194,10 @@ def chat_json(
     if parsed is not None:
         return parsed
 
+    # 用兜底模型再试（仅一次），避免主模型持续输出非 JSON 卡死整个流程
     if use_fallback:
-        # 主模型两次都失败 -> 用兜底模型整段再试一次
         try:
             raw = _call(fallback)
-        except LLMOutputError:
-            raw = ""
-        parsed = _try_parse(raw)
-        if parsed is not None:
-            return parsed
-        try:
-            raw = _call(
-                fallback,
-                "\n\n请严格只输出一个合法的 JSON 对象，不要包含任何解释或 markdown 代码块标记。",
-            )
         except LLMOutputError:
             raw = ""
         parsed = _try_parse(raw)

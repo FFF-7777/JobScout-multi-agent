@@ -512,7 +512,7 @@ function startAnalyze() {
         class="job-table"
         :row-style="{ cursor: 'pointer' }"
       >
-        <el-table-column type="selection" width="64" />
+        <el-table-column type="selection" width="64" :reserve-selection="true" />
         <el-table-column prop="id" label="ID" width="56" />
         <el-table-column prop="company_name" label="公司" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ row.company_name || "（待解析）" }}</template>

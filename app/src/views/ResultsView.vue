@@ -467,7 +467,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column type="selection" width="42" />
+        <el-table-column type="selection" width="42" :reserve-selection="true" />
         <el-table-column prop="company_name" label="公司" min-width="120" />
         <el-table-column prop="job_title" label="岗位" min-width="140" />
         <el-table-column prop="city" label="城市" width="80" />

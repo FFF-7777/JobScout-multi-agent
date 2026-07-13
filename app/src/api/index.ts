@@ -106,6 +106,7 @@ export interface MatchResult {
   status: string;
   error_message: string;
   report_cache_key: string | null;
+  created_at: string | null;
 }
 export interface PaginatedResults {
   items: MatchResult[];

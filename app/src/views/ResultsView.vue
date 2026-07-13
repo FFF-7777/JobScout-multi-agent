@@ -17,6 +17,8 @@ const selectedIds = ref<number[]>([]);
 const generating = ref(false);
 const retrying = ref(false);
 const taskStatus = ref<string>("");
+// 排序：默认按时间倒序（最新在上）
+const sortBy = ref<"time" | "score">("time");
 
 // 分页状态
 const page = ref(1);
@@ -153,6 +155,15 @@ const filtered = computed(() =>
       if (!hay.toLowerCase().includes(skillFilter.value.toLowerCase())) return false;
     }
     return true;
+  }).sort((a, b) => {
+    if (sortBy.value === "score") {
+      // 按分数降序（高分在前）
+      return (b.score || 0) - (a.score || 0);
+    }
+    // 按时间降序（最新在前）：created_at 优先，id 兜底
+    const ta = a.created_at ? new Date(a.created_at).getTime() : a.id;
+    const tb = b.created_at ? new Date(b.created_at).getTime() : b.id;
+    return tb - ta;
   })
 );
 const totalFiltered = computed(() => filtered.value.length);
@@ -289,6 +300,10 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
         <el-option label="不建议投递" value="skip" />
       </el-select>
       <el-input v-model="skillFilter" clearable placeholder="技术栈关键词" style="width: 180px" />
+      <el-radio-group v-model="sortBy" size="small" style="margin-right: 8px">
+        <el-radio-button value="time">按时间</el-radio-button>
+        <el-radio-button value="score">按分数</el-radio-button>
+      </el-radio-group>
       <div style="flex: 1" />
       <span v-if="selectedIds.length" class="sel-hint">已选 {{ selectedIds.length }} 个</span>
       <el-button

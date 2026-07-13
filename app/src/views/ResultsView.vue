@@ -344,7 +344,6 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
         @row-click="(row: MatchResult) => openDetail(row.job_id)"
         :row-style="{ cursor: 'pointer' }"
         @selection-change="(rows: MatchResult[]) => (selectedIds = rows.map((r) => r.id))"
-        :default-sort="{ prop: 'score', order: 'descending' }"
       >
         <el-table-column type="expand" width="36">
           <template #default="{ row }">

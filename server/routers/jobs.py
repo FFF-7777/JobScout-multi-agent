@@ -21,8 +21,8 @@ from schemas.job import (
     ImportImagesResult,
     ImportImageFailed,
 )
-from services import baidu_ocr, document_parser, job_agent, url_fetcher
-from services.jd_preprocessor import clean_ocr_jd, clean_web_jd
+from services import baidu_ocr, document_parser, job_agent, url_fetcher, vision_ocr
+from services.jd_preprocessor import assess_ocr_quality, clean_ocr_jd, clean_web_jd
 from services.job_parse_queue import enqueue_parse
 
 logger = logging.getLogger(__name__)
@@ -243,13 +243,31 @@ async def import_images(
     created: list[dict] = []
     failed: list[ImportImageFailed] = []
     created_ids: list[int] = []
+    vision_fallback_count = 0
 
-    for res in ocr_results:
-        fname = res.get("filename", "")
-        if "error" in res:
-            failed.append(ImportImageFailed(filename=fname, error=res["error"]))
-            continue
+    for index, (image_data, image_name) in enumerate(images):
+        res = ocr_results[index] if index < len(ocr_results) else {"filename": image_name, "error": "OCR 未返回结果"}
+        fname = res.get("filename", "") or image_name
         text = (res.get("text") or "").strip()
+        primary_error = str(res.get("error") or "").strip()
+        needs_vision = bool(primary_error) or not text or assess_ocr_quality(text) < 0.65
+        if needs_vision:
+            try:
+                vision_text = await asyncio.to_thread(
+                    vision_ocr.recognize_image,
+                    image_data,
+                    image_name,
+                    document_type="job",
+                )
+                if vision_text.strip():
+                    text = vision_text.strip()
+                    primary_error = ""
+                    vision_fallback_count += 1
+            except Exception as exc:  # noqa: BLE001
+                if not text:
+                    reason = primary_error or "未识别到文字"
+                    failed.append(ImportImageFailed(filename=fname, error=f"{reason}；视觉兜底失败：{exc}"))
+                    continue
         if not text:
             failed.append(ImportImageFailed(filename=fname, error="未识别到文字"))
             continue
@@ -269,7 +287,12 @@ async def import_images(
 
     # OCR 导入后自动解析（不阻塞返回）
     enqueue_parse(created_ids)
-    return ImportImagesResult(created=created, failed=failed)
+    return ImportImagesResult(
+        created=created,
+        failed=failed,
+        provider=provider,
+        vision_fallback_count=vision_fallback_count,
+    )
 
 
 @router.get("", response_model=list[JobOut])

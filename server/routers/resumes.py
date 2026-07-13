@@ -1,6 +1,7 @@
 """简历相关接口。"""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -16,7 +17,7 @@ from schemas.resume import (
     ResumeOut,
     ResumeParseRequest,
 )
-from services import baidu_ocr, document_parser, resume_agent
+from services import baidu_ocr, document_parser, resume_agent, vision_ocr
 
 router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 
@@ -92,12 +93,28 @@ async def import_resume_images(
 
     pages: list[str] = []
     failed: list[ResumeImportImageFailed] = []
-    for idx, item in enumerate(ocr_results, start=1):
-        filename = item.get("filename", f"page-{idx}")
+    vision_used = False
+    for idx, (image_data, image_name) in enumerate(images, start=1):
+        item = ocr_results[idx - 1] if idx <= len(ocr_results) else {"filename": image_name, "error": "OCR 未返回结果"}
+        filename = item.get("filename", f"page-{idx}") or image_name
         text = (item.get("text") or "").strip()
-        if item.get("error"):
-            failed.append(ResumeImportImageFailed(filename=filename, error=str(item["error"])))
-            continue
+        primary_error = str(item.get("error") or "").strip()
+        if primary_error or not text:
+            try:
+                text = (
+                    await asyncio.to_thread(
+                        vision_ocr.recognize_image,
+                        image_data,
+                        image_name,
+                        document_type="resume",
+                    )
+                ).strip()
+                vision_used = bool(text) or vision_used
+                primary_error = ""
+            except Exception as exc:  # noqa: BLE001
+                reason = primary_error or "未识别到文字"
+                failed.append(ResumeImportImageFailed(filename=filename, error=f"{reason}；视觉兜底失败：{exc}"))
+                continue
         if not text:
             failed.append(ResumeImportImageFailed(filename=filename, error="未识别到文字"))
             continue
@@ -121,7 +138,7 @@ async def import_resume_images(
         resume=resume,
         total=len(files),
         success=len(pages),
-        provider=provider,
+        provider=f"{provider}+vision" if vision_used else provider,
         failed=failed,
     )
 

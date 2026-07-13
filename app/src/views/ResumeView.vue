@@ -159,7 +159,7 @@ async function confirmImportResumeImages() {
 
     if (result.failed.length === 0) {
       ElMessage.success(
-        `已将 ${result.success} 张图片合并为 1 份简历，并完成识别`
+        `已将 ${result.success} 张图片合并为 1 份简历，并完成识别${result.provider.includes("vision") ? "（含视觉模型兜底）" : ""}`
       );
     } else {
       const detail = result.failed

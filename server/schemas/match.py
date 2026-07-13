@@ -79,6 +79,15 @@ class ApplicationDecision(BaseModel):
     exception: str = ""
 
 
+class ResearchMetadata(BaseModel):
+    status: str = "disabled"  # disabled / skipped / success / degraded
+    attempted: bool = False
+    queries: list[str] = Field(default_factory=list)
+    source_notes: list[str] = Field(default_factory=list)
+    reason: str = ""
+    error: str = ""
+
+
 class MatchResultModel(BaseModel):
     """Match Agent 的结构化输出。"""
 
@@ -104,6 +113,7 @@ class MatchResultModel(BaseModel):
     next_actions: list[str] = Field(default_factory=list)
     confidence: float = Field(0.0, ge=0, le=100)
     research_summary: list[str] = Field(default_factory=list)
+    research_metadata: ResearchMetadata = Field(default_factory=ResearchMetadata)
 
 
 class MatchRunRequest(BaseModel):

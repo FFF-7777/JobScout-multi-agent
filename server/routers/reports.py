@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -47,13 +48,22 @@ def _detect_report_mode(report: Report) -> str:
     return "deep" if "深度分析" in text or "深度报告" in text else "standard"
 
 
+def _display_report_title(report: Report) -> str:
+    title = report.title or ""
+    if not title.startswith("岗位投递决策报告"):
+        return title
+    match = re.search(r"^\|\s*1\s*\|\s*([^|<]+)", report.markdown_content or "", re.MULTILINE)
+    company = match.group(1).strip() if match else ""
+    return title.replace("岗位投递决策报告", f"{company}报告", 1) if company else title
+
+
 def _to_report_out(report: Report) -> ReportOut:
     return ReportOut(
         id=report.id,
         resume_id=report.resume_id,
         task_id=report.task_id,
         mode=_detect_report_mode(report),
-        title=report.title,
+        title=_display_report_title(report),
         summary=report.summary,
         markdown_content=report.markdown_content,
         created_at=report.created_at,
@@ -512,10 +522,17 @@ def _rebuild_report_after_deep(
             else report_agent.build_standard_markdown(resume_profile, items)
         )
         label = "深度分析" if preferred_mode == "deep" else "基础分析"
+        companies = list(dict.fromkeys(item["job"].company_name for item in items if item["job"].company_name))
+        if len(items) == 1 and companies:
+            title_prefix = f"{companies[0]}报告"
+        elif companies:
+            title_prefix = f"{companies[0]}等{len(companies)}家公司报告"
+        else:
+            title_prefix = "岗位分析报告"
         report_row = Report(
             resume_id=resume.id,
             task_id=task_id,
-            title=f"岗位投递决策报告｜{label}（{len(items)} 个岗位） - {resume_profile.name or '候选人'}",
+            title=f"{title_prefix}｜{label}（{len(items)} 个岗位） - {resume_profile.name or '候选人'}",
             summary=f"{label} · 共 {len(items)} 个岗位 · 独立历史版本",
             markdown_content=markdown,
         )

@@ -119,6 +119,17 @@ function nextActions(row: MatchResult): any[] {
 function researchSummary(row: MatchResult): string[] {
   return dj(row)?.research_summary ?? [];
 }
+function researchMetadata(row: MatchResult): any {
+  return dj(row)?.research_metadata ?? null;
+}
+function researchStatusLabel(status?: string): string {
+  return {
+    success: "联网成功",
+    degraded: "联网失败，已降级",
+    skipped: "未触发",
+    disabled: "未开启",
+  }[status || "disabled"] || "状态未知";
+}
 function skillEvidenceSummary(row: MatchResult): any {
   return dj(row)?.skill_evidence_summary ?? null;
 }
@@ -294,7 +305,7 @@ const deepEta = computed(() => {
   const completed = task.done + task.failed;
   const remaining = Math.max(0, task.total - completed);
   if (!remaining) return 0;
-  const perItem = completed > 0 ? task.elapsed / completed : 45;
+  const perItem = completed > 0 ? task.elapsed / completed : 180;
   return Math.max(1, Math.round(perItem * remaining));
 });
 
@@ -323,10 +334,10 @@ function stopDeepPoll() {
 }
 
 function _deepTimeout(total: number): number {
-  // 每项预估 30s（LLM + 缓存命中可能更快），保底 2min，上限 15min
-  const perItem = 30 * 1000;
+  // 深度报告按每份约 3 分钟估算；轮询超时仅结束前端等待，不会中断后台任务。
+  const perItem = 180 * 1000;
   const estimated = total * perItem;
-  return Math.max(2 * 60 * 1000, Math.min(15 * 60 * 1000, estimated));
+  return Math.max(3 * 60 * 1000, Math.min(60 * 60 * 1000, estimated));
 }
 
 function taskStartedAt(createdAt?: string | null) {
@@ -671,11 +682,21 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
                   <span style="color: #3a6ff7; font-weight: 700">{{ i + 1 }}.</span> {{ a }}
                 </div>
               </div>
-              <div v-if="researchSummary(row).length" class="expand-section">
-                <span class="expand-label" style="color: #245bdb">深度研究补充</span>
-                <div class="expand-muted" style="margin: 6px 0 10px">仅深度分析会补充这部分外部语境，不参与快速分析。</div>
+              <div v-if="researchMetadata(row) || researchSummary(row).length" class="expand-section">
+                <span class="expand-label" style="color: #245bdb">
+                  联网研究 · {{ researchStatusLabel(researchMetadata(row)?.status) }}
+                </span>
+                <div class="expand-muted" style="margin: 6px 0 10px">
+                  {{ researchMetadata(row)?.reason || "快速分析不会调用联网研究。" }}
+                </div>
                 <div v-for="(item, i) in researchSummary(row)" :key="`research-${i}-${item}`" class="expand-item">
                   <span style="color: #3a6ff7; font-weight: 700">{{ i + 1 }}.</span> {{ item }}
+                </div>
+                <div v-if="researchMetadata(row)?.source_notes?.length" class="expand-muted" style="margin-top: 8px">
+                  来源说明：{{ researchMetadata(row).source_notes.join("；") }}
+                </div>
+                <div v-if="researchMetadata(row)?.error" class="expand-muted" style="margin-top: 8px; color: #b54708">
+                  失败原因：{{ researchMetadata(row).error }}
                 </div>
               </div>
               <!-- 旧字段兜底：匹配点/缺口 -->

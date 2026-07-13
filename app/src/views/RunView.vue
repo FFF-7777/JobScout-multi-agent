@@ -351,7 +351,7 @@ function conciseStepSummary(step: AgentRun | null, fallback: string) {
       return step.current_item || `正在并发分析 ${selectedJobs.value.length} 个岗位`;
     }
     if (step.status === "success") {
-      return `已完成 ${step.completed_items} 个岗位匹配` + (researchedJobCount.value ? `，其中 ${researchedJobCount.value} 个包含深度研究` : "");
+      return `已完成 ${step.completed_items} 个岗位匹配` + (researchedJobCount.value ? "；联网结果与失败降级状态请在岗位详情中核验" : "");
     }
     if (step.status === "failed") {
       if (!hasMatchResults.value) {
@@ -576,7 +576,7 @@ onUnmounted(() => {
           </div>
           <div class="metric-card">
             <span>深度研究</span>
-            <b>{{ runtime.deep_research_enabled ? `${researchedJobCount} 个触发` : "未开启" }}</b>
+            <b>{{ runtime.deep_research_enabled ? `${researchedJobCount} 个计划触发` : "未开启" }}</b>
           </div>
           <div class="metric-card">
             <span>匹配并发</span>

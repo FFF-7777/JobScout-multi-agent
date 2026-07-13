@@ -157,8 +157,9 @@ async function importImages(uploadedFiles: File[]) {
     const r = await api.importJobImages(uploadedFiles);
     const ok = r.created.length;
     const fail = r.failed.length;
+    const fallback = r.vision_fallback_count || 0;
     if (fail === 0) {
-      ElMessage.success(`成功识别导入 ${ok} 个岗位`);
+      ElMessage.success(`成功识别导入 ${ok} 个岗位${fallback ? `，其中 ${fallback} 张由视觉模型兜底` : ""}`);
     } else {
       const detail = r.failed
         .slice(0, 5)

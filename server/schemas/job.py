@@ -73,3 +73,5 @@ class ImportImagesResult(BaseModel):
     """图片批量导入结果：成功创建的岗位 + 失败明细。"""
     created: list[JobOut] = Field(default_factory=list)
     failed: list[ImportImageFailed] = Field(default_factory=list)
+    provider: str = ""
+    vision_fallback_count: int = 0

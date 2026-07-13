@@ -1,6 +1,7 @@
 """LLM 服务：按模型档位选择不同厂商 / Base URL / API Key。"""
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import Any
@@ -162,6 +163,42 @@ def chat_text(
         if use_fallback:
             return _with_retry(lambda: _do("fallback", fallback))
         raise
+
+
+def chat_image_text(
+    system: str,
+    prompt: str,
+    image: bytes,
+    *,
+    mime_type: str = "image/jpeg",
+    model_role: str = "vision",
+) -> str:
+    """使用 OpenAI 兼容的多模态消息读取单张图片。"""
+    client = _get_client(model_role)
+    model = _resolve_model(model_role)
+    data_url = f"data:{mime_type};base64,{base64.b64encode(image).decode('ascii')}"
+
+    def _do() -> str:
+        resp = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    text = _with_retry(_do)
+    if not text:
+        raise LLMOutputError("视觉模型未返回可用文字")
+    return text
 
 
 def chat_json(

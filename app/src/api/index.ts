@@ -305,7 +305,12 @@ export const api = {
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
     return http
-      .post<{ created: Job[]; failed: { filename: string; error: string }[] }>(
+      .post<{
+        created: Job[];
+        failed: { filename: string; error: string }[];
+        provider: string;
+        vision_fallback_count: number;
+      }>(
         "/api/jobs/import-images",
         fd
       )

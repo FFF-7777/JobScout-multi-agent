@@ -14,15 +14,33 @@ from services.research_router import ResearchPlan
 
 class ResearchContext(BaseModel):
     enabled: bool = False
+    status: str = "disabled"
+    attempted: bool = False
     queries: list[str] = Field(default_factory=list)
     summary_items: list[str] = Field(default_factory=list)
     source_notes: list[str] = Field(default_factory=list)
     hash: str = ""
     reason: str = ""
+    error: str = ""
 
 
-def empty_context(reason: str = "") -> ResearchContext:
-    return ResearchContext(enabled=False, reason=reason, hash=_hash_payload([]))
+def empty_context(
+    reason: str = "",
+    *,
+    status: str = "disabled",
+    attempted: bool = False,
+    queries: list[str] | None = None,
+    error: str = "",
+) -> ResearchContext:
+    return ResearchContext(
+        enabled=False,
+        status=status,
+        attempted=attempted,
+        queries=queries or [],
+        reason=reason,
+        error=error,
+        hash=_hash_payload({"status": status, "queries": queries or [], "error": error}),
+    )
 
 
 def _hash_payload(payload: object) -> str:
@@ -36,11 +54,11 @@ def fetch_research_context(
     plan: ResearchPlan,
 ) -> ResearchContext:
     if not plan.enabled:
-        return empty_context(plan.reason)
+        return empty_context(plan.reason, status="disabled" if plan.strategy == "off" else "skipped")
 
     settings = get_settings()
     if not settings.role_configured("reasoning"):
-        return empty_context("推理模型未配置，跳过深度研究。")
+        return empty_context("推理模型未配置，跳过深度研究。", status="skipped", queries=plan.queries)
 
     system = (
         "你是技术招聘研究助手。基于给定岗位画像和检索查询，"
@@ -69,7 +87,13 @@ def fetch_research_context(
             search_strategy=plan.strategy,
         )
     except Exception as exc:  # noqa: BLE001
-        return empty_context(f"深度研究降级：{exc}")
+        return empty_context(
+            "联网研究失败，已降级为仅基于简历和岗位信息分析。",
+            status="degraded",
+            attempted=True,
+            queries=plan.queries,
+            error=str(exc)[:500],
+        )
 
     summary_items = [str(item).strip() for item in (data.get("summary_items") or []) if str(item).strip()][:6]
     source_notes = [str(item).strip() for item in (data.get("source_notes") or []) if str(item).strip()][:6]
@@ -78,8 +102,17 @@ def fetch_research_context(
         "summary_items": summary_items,
         "source_notes": source_notes,
     }
+    if not summary_items:
+        return empty_context(
+            "联网请求未返回可用研究摘要，已降级。",
+            status="degraded",
+            attempted=True,
+            queries=plan.queries,
+        )
     return ResearchContext(
-        enabled=bool(summary_items),
+        enabled=True,
+        status="success",
+        attempted=True,
         queries=plan.queries,
         summary_items=summary_items,
         source_notes=source_notes,

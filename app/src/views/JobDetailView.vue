@@ -82,6 +82,7 @@ const nextActions = computed(() => (dj.value as any)?.next_actions ?? []);
 const confidence = computed(() => (dj.value as any)?.confidence ?? null);
 const hardConditionResult = computed(() => (dj.value as any)?.hard_condition_result ?? null);
 const researchSummary = computed(() => (dj.value as any)?.research_summary ?? []);
+const researchMetadata = computed(() => (dj.value as any)?.research_metadata ?? null);
 const skillEvidenceSummary = computed(() => (dj.value as any)?.skill_evidence_summary ?? null);
 const skillEvidence = computed(() => (dj.value as any)?.skill_evidence ?? []);
 
@@ -101,6 +102,17 @@ function decisionLabel(action?: string): string {
 /** HR 初筛中文标签 */
 function hrLabel(result?: string): string {
   return { competitive: "有竞争力", borderline: "存在风险", unlikely: "初筛概率低" }[result || ""] || result || "";
+}
+function researchStatusLabel(status?: string): string {
+  return {
+    success: "联网成功",
+    degraded: "联网失败，已降级",
+    skipped: "未触发",
+    disabled: "未开启",
+  }[status || "disabled"] || "状态未知";
+}
+function researchStatusType(status?: string): "success" | "warning" | "info" {
+  return status === "success" ? "success" : status === "degraded" ? "warning" : "info";
 }
 /** 深度报告有 interview_questions；基础报告只有 interview_focus */
 const interviewList = computed(() => {
@@ -475,7 +487,7 @@ function gotoResults() {
             <div class="deep-progress-meta">
               <span>{{ deepTask.done }} / {{ deepTask.total }} 已完成</span>
               <span>已等待 {{ fmtWait(deepTask.elapsed) }}</span>
-              <span v-if="!['done', 'partial'].includes(deepTask.status)">预计剩余约 {{ fmtWait(Math.max(1, 45 - deepTask.elapsed)) }}</span>
+              <span v-if="!['done', 'partial'].includes(deepTask.status)">预计剩余约 {{ fmtWait(Math.max(1, 180 - deepTask.elapsed)) }}</span>
               <span v-else>已保存到报告导出页</span>
             </div>
           </div>
@@ -578,13 +590,29 @@ function gotoResults() {
                 </div>
               </div>
             </div>
-            <div v-if="researchSummary.length" class="module-card module-research">
-              <div class="module-head">深度研究补充</div>
+            <div v-if="researchMetadata || researchSummary.length" class="module-card module-research">
+              <div class="module-head research-head">
+                <span>联网研究</span>
+                <el-tag :type="researchStatusType(researchMetadata?.status)" size="small" effect="plain">
+                  {{ researchStatusLabel(researchMetadata?.status) }}
+                </el-tag>
+              </div>
               <div class="module-empty" style="margin-bottom: 10px">
-                这部分来自深度分析阶段的外部语境补充，用来帮助解释岗位技术要求，不会在快速分析中出现。
+                {{ researchMetadata?.reason || "快速分析不会调用联网研究。" }}
+              </div>
+              <div v-if="researchMetadata?.queries?.length" class="research-meta-row">
+                <b>检索词</b>
+                <span v-for="query in researchMetadata.queries" :key="query">{{ query }}</span>
               </div>
               <div v-for="(item, i) in researchSummary" :key="`research-${i}`" class="module-item">
                 <span class="action-num">{{ i + 1 }}.</span> {{ item }}
+              </div>
+              <div v-if="researchMetadata?.source_notes?.length" class="research-sources">
+                <b>来源说明</b>
+                <div v-for="source in researchMetadata.source_notes" :key="source">{{ source }}</div>
+              </div>
+              <div v-if="researchMetadata?.error" class="research-error">
+                失败原因：{{ researchMetadata.error }}
               </div>
             </div>
           </div>
@@ -1174,6 +1202,13 @@ ol {
 .module-action { border-top: 2px solid #5279d8; }
 .module-evidence-card { border-top: 2px solid #6b7bf0; }
 .module-research { border-top: 2px solid #4b83ff; background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); }
+.research-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.research-meta-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 14px; color: #60708c; font-size: 12px; }
+.research-meta-row b { width: 100%; color: #344054; }
+.research-meta-row span { padding: 5px 9px; border: 1px solid #dbe5ff; border-radius: 999px; background: #f4f7ff; }
+.research-sources { margin-top: 12px; color: #60708c; font-size: 12px; line-height: 1.7; }
+.research-sources b { display: block; margin-bottom: 4px; color: #344054; }
+.research-error { margin-top: 10px; color: #b54708; font-size: 12px; overflow-wrap: anywhere; }
 
 .evidence-summary-grid {
   display: grid;

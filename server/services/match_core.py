@@ -9,7 +9,7 @@ from config import get_settings
 from database import SessionLocal
 from models import Job, JobAnalysis, MatchResult, Resume
 from schemas.job import JobProfile
-from schemas.match import MatchResultModel
+from schemas.match import MatchResultModel, ResearchMetadata
 from schemas.resume import ResumeProfile
 from services import match_agent, research_router, web_research_service
 from services.precheck import precheck_job
@@ -73,6 +73,14 @@ def run_single_match(
         job_profile,
         plan=research_plan,
     )
+    research_metadata = ResearchMetadata(
+        status=research_context.status,
+        attempted=research_context.attempted,
+        queries=research_context.queries,
+        source_notes=research_context.source_notes,
+        reason=research_context.reason,
+        error=research_context.error,
+    )
 
     # 简历原文也作为匹配主输入参与所有档位分析，减少仅靠结构化画像带来的细节丢失。
     # tier / resume_text_hash / policy_version 一并纳入缓存键，避免不同档位或不同原文版本串缓存。
@@ -102,10 +110,12 @@ def run_single_match(
     pre = precheck_job(resume, job_profile)
     hard_items: list[dict] = pre.get("items", [])
     if not pre["passed"]:
+        hard_fail_result = match_agent.build_hard_fail_result(
+            pre["hard_failures"], job_profile, hard_items=[match_agent.HardConditionItem(**h) for h in hard_items]
+        )
+        hard_fail_result.research_metadata = research_metadata
         return MatchOutcome(
-            match_agent.build_hard_fail_result(
-                pre["hard_failures"], job_profile, hard_items=[match_agent.HardConditionItem(**h) for h in hard_items]
-            ),
+            hard_fail_result,
             key,
             False,
             None,
@@ -122,8 +132,12 @@ def run_single_match(
             .first()
         )
         if row and row.detail_json:
+            cached_match = MatchResultModel.model_validate(row.detail_json)
+            cached_match.research_metadata = research_metadata
+            if research_context.summary_items:
+                cached_match.research_summary = research_context.summary_items
             return MatchOutcome(
-                MatchResultModel.model_validate(row.detail_json), key, True, None, False
+                cached_match, key, True, None, False
             )
     finally:
         db.close()
@@ -140,6 +154,8 @@ def run_single_match(
     except Exception as e:  # noqa: BLE001
         return MatchOutcome(None, key, False, str(e), False)
 
+    match.research_summary = research_context.summary_items
+    match.research_metadata = research_metadata
     return MatchOutcome(match, key, False, None, False)
 
 

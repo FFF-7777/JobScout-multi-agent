@@ -644,8 +644,10 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     )
     if two_tier:
         # P0#4：深度阶段 = 自动 Top-K 深度复核 ∪ 用户强制 full 深度分析。
-        # 仅取 ranked[:top_k] 会导致用户设置 full 但未进 Top-K 的岗位永远不做深度分析。
+        # 关键 UX 修正：analyze_mode=summary 的岗位不参与 deep 阶段。
+        # 用户明明选了"快速分析"，不应该再被偷偷加一次 deep（reasoning 模型+思考模式 1m+/次）。
         top_ids = {v["job_id"] for v in ranked[:top_k]}
+        # 必须先知道哪些岗位是 full 模式，summary 模式一律不进 deep
         full_ids: set[int] = set()
         db_full = SessionLocal()
         try:
@@ -660,14 +662,30 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             }
         finally:
             db_full.close()
-        deep_ids = top_ids | full_ids
-        deep_targets = [{"job_id": jid} for jid in deep_ids]
-        for t in deep_targets:
-            upsert_item_run(
-                task_id, "Match Agent", t["job_id"],
-                title_map.get(t["job_id"], ""), tier="deep", status="queued",
+        # Top-K 只在 full 模式里取（summary 模式岗不参与 Top-K 深度复核）
+        full_top_ids = {jid for jid in top_ids if jid in full_ids}
+        deep_ids = full_top_ids | full_ids
+        if not deep_ids:
+            # 没有任何 full 模式岗位：跳过 deep 阶段，所有岗位用 quick 结果
+            _update_run(
+                task_id,
+                "Match Agent",
+                summary=(
+                    f"完成 {len(results)} 个岗位评分，最高 {top} 分"
+                    f"（全部 summary 模式，跳过深度阶段以节省时间）"
+                ),
+                eta_seconds=0,
+                eta_low=0,
+                eta_high=0,
             )
-        _run_phase("deep", deep_targets)
+        else:
+            deep_targets = [{"job_id": jid} for jid in deep_ids]
+            for t in deep_targets:
+                upsert_item_run(
+                    task_id, "Match Agent", t["job_id"],
+                    title_map.get(t["job_id"], ""), tier="deep", status="queued",
+                )
+            _run_phase("deep", deep_targets)
 
     # 汇总最终匹配结果（按最终分数降序），供下游报告节点使用
     results = sorted(final_map.values(), key=lambda x: x["match"]["score"], reverse=True)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { marked } from "marked";
 import { api, type ReportItem } from "@/api";
@@ -7,6 +7,7 @@ import { api, type ReportItem } from "@/api";
 const reports = ref<ReportItem[]>([]);
 const current = ref<ReportItem | null>(null);
 const loading = ref(false);
+let autoReload: number | null = null;
 
 function renderMd(text: string): string {
   return marked.parse(text || "", { breaks: true }) as string;
@@ -15,9 +16,13 @@ function renderMd(text: string): string {
 async function load() {
   loading.value = true;
   try {
-    reports.value = await api.listReports();
-    if (reports.value.length && !current.value) {
-      current.value = reports.value[0];
+    const list = await api.listReports();
+    reports.value = list;
+    // 保持当前选中的报告不变（若有新报告且无选中，自动切到最新的）
+    if (list.length && !current.value) {
+      current.value = list[0];
+    } else if (!current.value) {
+      current.value = null;
     }
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || "加载报告失败");
@@ -36,7 +41,17 @@ function dlXlsx(id: number) {
   window.open(api.excelUrl(id), "_blank");
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  // 每 30s 自动拉取最新报告列表，让后台生成的报告自动出现
+  autoReload = window.setInterval(load, 30000);
+});
+onUnmounted(() => {
+  if (autoReload !== null) {
+    clearInterval(autoReload);
+    autoReload = null;
+  }
+});
 </script>
 
 <template>

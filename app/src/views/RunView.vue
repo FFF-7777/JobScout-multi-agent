@@ -14,6 +14,8 @@ const running = ref(false);
 const connError = ref(false);
 let pollTimer: number | null = null;
 let tickTimer: number | null = null;
+// 标记是否已发过完成通知，避免重复提示
+let notifiedDone = false;
 
 // 任务起始时间（毫秒）。轮询时若后端未给 started_at，用本地时间兜底。
 const taskStartedAt = ref<number | null>(null);
@@ -118,6 +120,16 @@ async function poll(taskId: string) {
       taskStartedAt.value = null;
       running.value = false;
       stopPoll();
+      if (!notifiedDone) {
+        notifiedDone = true;
+        const successCount = t.steps.filter((s) => s.status === "success").length;
+        const totalCount = t.steps.length;
+        if (successCount >= totalCount) {
+          ElMessage.success("所有 Agent 已执行完毕，可前往「推荐结果」查看");
+        } else if (successCount > 0) {
+          ElMessage.warning(`部分 Agent 执行完成（${successCount}/${totalCount}），可前往「推荐结果」查看`);
+        }
+      }
     } else {
       // 用第一个 step 的 started_at 当作任务起始时间（仅在 running 时）
       const firstStarted = t.steps.find((s) => s.started_at)?.started_at;
@@ -200,6 +212,7 @@ async function abort() {
 function reset() {
   // 清空当前任务状态，回到「尚未开始」。后端的历史 agent_runs 保留，store.taskId 清掉即可。
   stopPoll();
+  notifiedDone = false;
   running.value = false;
   status.value = "";
   steps.value = [];
@@ -320,6 +333,8 @@ onMounted(async () => {
   if (!tickTimer) {
     tickTimer = window.setInterval(() => (nowTick.value = Date.now()), 1000);
   }
+  // 恢复运行中任务时，重置已完成通知标记（防重复）
+  notifiedDone = false;
 });
 onUnmounted(stopPoll);
 </script>

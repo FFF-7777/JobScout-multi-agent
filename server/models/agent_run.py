@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -11,6 +11,9 @@ from database import Base
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (
+        UniqueConstraint("task_id", "agent_name", name="uq_agent_runs_task_agent"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[str] = mapped_column(String(64), index=True)

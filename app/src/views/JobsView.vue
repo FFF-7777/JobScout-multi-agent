@@ -21,8 +21,8 @@ const jobs = ref<Job[]>([]);
 const selectedIds = ref<number[]>([]);
 // 行级 loading：行 ID -> 是否在解析
 const analyzingIds = ref<Set<number>>(new Set());
-// 全文模式上限（与后端 _FULL_MODE_LIMIT 同步）
-const FULL_MODE_LIMIT = 10;
+// 深度分析无数量上限（后端 full_mode_limit=0），但每个深度分析会额外把简历原文（最长 8000 字）塞进 LLM prompt：
+// token 消耗与单次耗时都明显更高。下方顶部状态条会实时提示当前数量与代价。
 // #42：导入后后台自动解析，轮询 parse_status 直到全部完成
 const parsePollTimer = ref<number | null>(null);
 
@@ -38,19 +38,6 @@ const bulkMode = ref<"summary" | "full">("summary");
 async function setModeForSelected(mode: "summary" | "full") {
   if (!hasSelected.value) return;
   const ids = [...selectedIds.value];
-  // 上限校验：粗略先按后端拒绝的会再回滚
-  if (mode === "full") {
-    const willFull =
-      jobs.value.filter(
-        (j) => ids.includes(j.id) && (j.analyze_mode || "summary") !== "full"
-      ).length;
-    if (fullModeCount.value + willFull > FULL_MODE_LIMIT) {
-      ElMessage.warning(
-        `深度分析一次最多 ${FULL_MODE_LIMIT} 个岗位（当前已有 ${fullModeCount.value} 个），先把别的切回快速分析再试`
-      );
-      return;
-    }
-  }
   loading.value = true;
   try {
     // 串行设置，避免给后端并发打满；通常选中只有几个，可接受
@@ -59,7 +46,7 @@ async function setModeForSelected(mode: "summary" | "full") {
     }
     ElMessage.success(
       mode === "full"
-        ? `已将 ${ids.length} 个岗位切换为深度分析（额外结合简历原文）`
+        ? `已将 ${ids.length} 个岗位切换为深度分析（额外结合简历原文，注意：耗时与 token 成本更高）`
         : `已将 ${ids.length} 个岗位切换为快速分析`
     );
     await refresh();
@@ -460,7 +447,8 @@ function startAnalyze() {
           </el-button>
         </div>
         <div v-if="fullModeCount > 0" class="mode-hint">
-          深度分析：{{ fullModeCount }} / {{ FULL_MODE_LIMIT }}（额外结合简历原文，更精准，单次 LLM 耗时翻倍）
+          深度分析：{{ fullModeCount }} 个
+          <span class="mode-hint-warn">（无数量上限；额外结合简历原文，单次 LLM 耗时与 token 成本显著增加）</span>
         </div>
       </div>
       <el-table
@@ -599,6 +587,9 @@ function startAnalyze() {
   color: #b88218;
   font-size: 12px;
   margin-top: 6px;
+}
+.mode-hint-warn {
+  color: #b88218;
 }
 .hint {
   color: #8a94a6;

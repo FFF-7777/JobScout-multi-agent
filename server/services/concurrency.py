@@ -73,8 +73,10 @@ def bounded_map(
                     except AbortFlow:
                         raise
                     except Exception as cb_err:  # noqa: BLE001
-                        with out_lock:
-                            out[-1] = (item, result, cb_err)
+                        # 保留 worker 原始结果/错误，不因 on_result 回调异常而覆盖。
+                        # out[-1] 中存有 worker 的 (item, result, error)，
+                        # 回调出错不应篡改 worker 的真实执行结果。
+                        pass
         except AbortFlow:
             for f in futures:
                 f.cancel()

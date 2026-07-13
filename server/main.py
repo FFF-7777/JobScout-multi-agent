@@ -12,6 +12,7 @@ from database import SessionLocal, init_db
 from models import AgentRun
 from routers import agents, jobs, match, reports, resumes
 from services import llm_service
+from services.job_parse_queue import start_parse_daemon, stop_parse_daemon
 
 settings = get_settings()
 
@@ -20,7 +21,9 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     init_db()
     _recover_interrupted_runs()
+    start_parse_daemon()
     yield
+    stop_parse_daemon()
 
 
 def _recover_interrupted_runs() -> None:
@@ -85,10 +88,50 @@ async def _handle_llm_output(request: Request, exc: llm_service.LLMOutputError):
 
 @app.get("/health", tags=["system"])
 def health():
+    s = settings
+    # 静态探活：列每个 Agent 当前实际用的模型 + 思考模式 + 配置状态。
+    # 注意：这是同步接口，不实际调用 LLM；模型可达性需另调 POST /api/test-llm。
+    agents = [
+        {
+            "name": "Resume Agent",
+            "role": "fast",
+            "model": s.llm_fast_model or s.llm_model,
+            "provider": s.llm_fast_provider,
+            "enable_thinking": s.llm_fast_enable_thinking,
+            "configured": bool(s.dashscope_api_key),
+        },
+        {
+            "name": "Job Agent",
+            "role": "fast",
+            "model": s.llm_fast_model or s.llm_model,
+            "provider": s.llm_fast_provider,
+            "enable_thinking": s.llm_fast_enable_thinking,
+            "configured": bool(s.dashscope_api_key),
+        },
+        {
+            "name": "Match Agent",
+            "role": "reasoning",
+            "model": s.llm_reasoning_model or s.llm_model,
+            "provider": s.llm_reasoning_provider,
+            "enable_thinking": s.llm_reasoning_enable_thinking,
+            "configured": bool(s.dashscope_api_key),
+        },
+        {
+            "name": "Report Agent",
+            "role": "report",
+            "model": s.llm_report_model or s.llm_reasoning_model or s.llm_model,
+            "provider": s.llm_reasoning_provider,
+            "enable_thinking": s.llm_report_enable_thinking,
+            "configured": bool(s.dashscope_api_key),
+        },
+    ]
     return {
         "status": "ok",
-        "llm_model": settings.llm_model,
-        "has_api_key": settings.has_api_key,
+        "llm_model": s.llm_model,
+        "has_api_key": s.has_api_key,
+        "llm_base_url": s.llm_base_url,
+        "llm_timeout": s.llm_timeout,
+        "agents": agents,
     }
 
 

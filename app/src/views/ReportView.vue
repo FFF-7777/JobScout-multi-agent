@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
+import { marked } from "marked";
 import { api, type ReportItem } from "@/api";
 
 const reports = ref<ReportItem[]>([]);
 const current = ref<ReportItem | null>(null);
 const loading = ref(false);
+
+function renderMd(text: string): string {
+  return marked.parse(text || "", { breaks: true }) as string;
+}
 
 async function load() {
   loading.value = true;
@@ -62,7 +67,7 @@ onMounted(load);
             <el-button size="small" type="primary" @click="dlXlsx(current.id)">导出 Excel</el-button>
           </div>
         </div>
-        <pre class="md">{{ current.markdown_content }}</pre>
+        <div class="md" v-html="renderMd(current.markdown_content)"></div>
       </div>
     </div>
   </div>
@@ -101,15 +106,24 @@ onMounted(load);
   margin-bottom: 12px;
 }
 .md {
-  white-space: pre-wrap;
-  background: #f5f7fb;
-  padding: 16px;
+  background: #fdfbf7;
+  padding: 24px 28px;
   border-radius: 8px;
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 15px;
+  line-height: 1.9;
   max-height: 70vh;
   overflow: auto;
 }
+.md h1 { font-size: 22px; margin: 0 0 14px; color: #1d2129; }
+.md h2 { font-size: 18px; margin: 22px 0 10px; color: #1d2129; }
+.md h3 { font-size: 16px; margin: 18px 0 8px; color: #1d2129; }
+.md p { margin: 8px 0; }
+.md table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+.md th, .md td { border: 1px solid #e4dcc8; padding: 8px 12px; text-align: left; }
+.md th { background: #f5ecd6; font-weight: 600; }
+.md code { background: #ede5d3; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+.md blockquote { border-left: 4px solid #c9a84c; margin: 10px 0; padding: 8px 16px; background: #faf6eb; border-radius: 0 4px 4px 0; }
+.md hr { border: none; border-top: 1px solid #e4dcc8; margin: 18px 0; }
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;

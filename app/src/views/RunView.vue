@@ -301,10 +301,19 @@ function fmtItemDuration(ms: number | null) {
 }
 
 onMounted(async () => {
+  // 不再自动加载上一次任务的结果。进页面直接显示空状态（「尚未开始，点击开始分析」），
+  // 用户可以自己点「开始分析」或切换到推荐结果/报告导出页查看历史。
+  // 但如果上一个任务正在运行中，则恢复轮询（避免切回页面时中断感知）。
   if (store.taskId) {
     await poll(store.taskId);
     if (status.value && !isFinished(status.value)) {
       pollTimer = window.setInterval(() => poll(store.taskId!), 1800);
+    } else if (status.value && isFinished(status.value)) {
+      // 已结束的任务：清掉 taskId 让页面变回空状态，不显示旧结果
+      store.setTask("");
+      running.value = false;
+      status.value = "";
+      steps.value = [];
     }
   }
   // 即使没任务，也启动秒表，避免进入页面时 elapsed 一直为 0

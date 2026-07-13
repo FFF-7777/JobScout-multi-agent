@@ -20,11 +20,23 @@ from schemas.resume import ResumeProfile
 
 
 def precheck_job(resume: ResumeProfile, job: JobProfile) -> dict:
-    """返回 {"passed": bool, "hard_failures": [str, ...]}。"""
+    """返回 {"passed": bool, "hard_failures": [str, ...], "items": [dict, ...]}。
+
+    items 中每个元素为 {"name", "status", "resume_evidence", "job_requirement"}，
+    供下游 Match Agent 的 hard_condition_result 使用。
+    """
     hard_failures: list[str] = []
+    items: list[dict] = []
 
     # 1. 毕业年份
     if job.graduation_years and resume.graduation_year:
+        item = {
+            "name": "毕业年份",
+            "status": "pass" if resume.graduation_year in job.graduation_years else "fail",
+            "resume_evidence": f"{resume.graduation_year}届",
+            "job_requirement": f"要求毕业年份 {job.graduation_years}",
+        }
+        items.append(item)
         if resume.graduation_year not in job.graduation_years:
             hard_failures.append(
                 f"毕业年份不符（简历 {resume.graduation_year} 不在岗位要求 {job.graduation_years} 内）"
@@ -32,9 +44,17 @@ def precheck_job(resume: ResumeProfile, job: JobProfile) -> dict:
 
     # 2. 每周实习天数
     if job.internship_days_per_week and resume.available_days_per_week is not None:
-        if resume.available_days_per_week < job.internship_days_per_week:
+        ok = resume.available_days_per_week >= job.internship_days_per_week
+        item = {
+            "name": "每周实习天数",
+            "status": "pass" if ok else "fail",
+            "resume_evidence": f"{resume.available_days_per_week}天/周",
+            "job_requirement": f"要求至少 {job.internship_days_per_week}天/周",
+        }
+        items.append(item)
+        if not ok:
             hard_failures.append(
                 f"每周实习天数不足（简历 {resume.available_days_per_week} 天 < 岗位要求 {job.internship_days_per_week} 天）"
             )
 
-    return {"passed": not hard_failures, "hard_failures": hard_failures}
+    return {"passed": not hard_failures, "hard_failures": hard_failures, "items": items}

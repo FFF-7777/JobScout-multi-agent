@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Job, MatchResult, Resume
-from schemas.match import MatchResultOut
+from schemas.match import MatchResultOut, PaginatedResults
 from services import match_core
 from services.item_run import list_item_runs
 
@@ -32,10 +32,12 @@ def _enrich(row: MatchResult, db: Session) -> MatchResultOut:
     return out
 
 
-@router.get("/results", response_model=list[MatchResultOut])
+@router.get("/results", response_model=PaginatedResults)
 def list_results(
     task_id: str | None = None,
     resume_id: int | None = None,
+    page: int = 1,
+    page_size: int = 30,
     db: Session = Depends(get_db),
 ):
     q = db.query(MatchResult)
@@ -43,8 +45,15 @@ def list_results(
         q = q.filter(MatchResult.task_id == task_id)
     if resume_id:
         q = q.filter(MatchResult.resume_id == resume_id)
-    rows = q.order_by(MatchResult.score.desc()).all()
-    return [_enrich(r, db) for r in rows]
+    total = q.count()
+    rows = (
+        q.order_by(MatchResult.score.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    items = [_enrich(r, db) for r in rows]
+    return PaginatedResults(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.get("/results/{result_id}", response_model=MatchResultOut)

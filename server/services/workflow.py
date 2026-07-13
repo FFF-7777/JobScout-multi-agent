@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -36,6 +36,11 @@ AGENT_STEPS = [
 ]
 
 
+def _utcnow() -> datetime:
+    """tz 安全的 naive UTC 时间（避免 datetime.utcnow() 的 DeprecationWarning）。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class JobScoutState(TypedDict, total=False):
     task_id: str
     resume_id: int
@@ -58,14 +63,20 @@ def _init_runs(task_id: str) -> None:
     db = SessionLocal()
     try:
         for order, (node, name) in enumerate(AGENT_STEPS, 1):
-            db.add(
-                AgentRun(
-                    task_id=task_id,
-                    agent_name=name,
-                    step_order=order,
-                    status="pending",
-                )
+            existing = (
+                db.query(AgentRun)
+                .filter(AgentRun.task_id == task_id, AgentRun.agent_name == name)
+                .first()
             )
+            if existing is None:
+                db.add(
+                    AgentRun(
+                        task_id=task_id,
+                        agent_name=name,
+                        step_order=order,
+                        status="pending",
+                    )
+                )
         db.commit()
     finally:
         db.close()
@@ -127,9 +138,9 @@ def _update_run(
         if error:
             run.error_message = error
         if start:
-            run.started_at = datetime.utcnow()
+            run.started_at = _utcnow()
         if finish:
-            run.finished_at = datetime.utcnow()
+            run.finished_at = _utcnow()
         db.commit()
     finally:
         db.close()
@@ -148,7 +159,7 @@ def _calc_eta(task_id: str, agent_name: str, total: int, done: int) -> int:
         )
         if run is None or run.started_at is None:
             return 0
-        elapsed = (datetime.utcnow() - run.started_at).total_seconds()
+        elapsed = (_utcnow() - run.started_at).total_seconds()
         per = elapsed / done
         remain = total - done
         return max(0, int(per * remain))
@@ -222,7 +233,7 @@ def node_parse_resume(state: JobScoutState) -> JobScoutState:
             profile = resume_agent.run(resume.raw_text, model_role="fast")
             resume.profile_json = profile.model_dump()
             resume.content_hash = resume_agent.compute_hash(resume.raw_text)
-            resume.parsed_at = datetime.utcnow()
+            resume.parsed_at = _utcnow()
             resume.profile_version = (resume.profile_version or 0) + 1
             db.commit()
         state["resume_profile"] = profile.model_dump()
@@ -261,25 +272,62 @@ def node_abort(state: JobScoutState) -> JobScoutState:
     return state
 
 
-def _parse_single_job(jid: int):
-    """worker 函数：在子线程跑 LLM；不碰 DB。返回 profile（JobProfile）。失败抛异常。"""
+def _parse_single_job(work_item: dict) -> JobProfile:
+    """worker 函数：纯 LLM 调用，不碰 DB。
+    
+    work_item 由 _preload_job_work_items() 在主线程预加载，
+    包含 hints / jd_text / source / cached_profile（若已有分析缓存）。
+    """
+    if work_item.get("cached_profile"):
+        return work_item["cached_profile"]
+    return job_agent.run(
+        work_item["jd_text"],
+        work_item["hints"],
+        source=work_item["source"],
+        model_role="fast",
+    )
+
+
+def _preload_job_work_items(job_ids: list[int]) -> list[dict]:
+    """主线程一次性查询所有岗位的 DB 数据，打包成 worker 可直接使用的 work_item。
+    
+    每个 work_item 包含：
+    - jid: 岗位 ID
+    - hints: {company_name, job_title, city, salary}
+    - jd_text: 原始 JD 文本
+    - source: 来源（manual / boss / ocr 等）
+    - cached_profile: JobProfile 实例（若已有分析缓存），None 表示需要 LLM
+    """
+    if not job_ids:
+        return []
     db = SessionLocal()
     try:
-        job = db.get(Job, jid)
-        if job is None:
-            raise ValueError(f"岗位 {jid} 不存在")
-        existing = (
-            db.query(JobAnalysis).filter(JobAnalysis.job_id == jid).first()
-        )
-        if existing and existing.analysis_json:
-            return JobProfile.model_validate(existing.analysis_json)
-        hints = {
-            "company_name": job.company_name,
-            "job_title": job.job_title,
-            "city": job.city,
-            "salary": job.salary,
-        }
-        return job_agent.run(job.jd_text, hints, source=job.source, model_role="fast")
+        work_items = []
+        for jid in job_ids:
+            job = db.get(Job, jid)
+            if job is None:
+                continue
+            existing = (
+                db.query(JobAnalysis).filter(JobAnalysis.job_id == jid).first()
+            )
+            cached = (
+                JobProfile.model_validate(existing.analysis_json)
+                if existing and existing.analysis_json
+                else None
+            )
+            work_items.append({
+                "jid": jid,
+                "hints": {
+                    "company_name": job.company_name,
+                    "job_title": job.job_title,
+                    "city": job.city,
+                    "salary": job.salary,
+                },
+                "jd_text": job.jd_text,
+                "source": job.source,
+                "cached_profile": cached,
+            })
+        return work_items
     finally:
         db.close()
 
@@ -301,8 +349,12 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
     settings = get_settings()
     done = 0
 
-    def _on_result(jid, profile, err):
+    # 主线程预加载 DB 数据，worker 线程只做 LLM（不碰 Session）
+    work_items = _preload_job_work_items(job_ids)
+
+    def _on_result(wi, profile, err):
         nonlocal done
+        jid = wi["jid"]
         done += 1
         progress = int(done / total * 100) if total else 100
         label = f"正在解析岗位 {jid}（{done}/{total}）"
@@ -367,7 +419,7 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
         )
 
     bounded_map(
-        job_ids,
+        work_items,
         _parse_single_job,
         max_concurrency=settings.job_agent_concurrency,
         on_result=_on_result,
@@ -431,8 +483,10 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     start_times: dict[int, float] = {}
     in_flight: set[int] = set()
     cached_jids: set[int] = set()
-    counts = {"failed": 0, "done": 0}
-    durations: list[float] = []
+    # P0#2：quick / deep 两阶段分别计数与计时，避免 deep 阶段进度溢出 100%
+    phase_done = {"quick": 0, "deep": 0}
+    phase_failed = {"quick": 0, "deep": 0}
+    phase_durations = {"quick": [], "deep": []}
     title_map = {it["job_id"]: (it["profile"] or {}).get("job_title", "") for it in jobs}
     # jid -> (MatchResultModel, result_row_id)：最终（可能经 deep 覆盖）的匹配结果
     final_map: dict[int, dict] = {}
@@ -444,50 +498,64 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             tier="quick", status="queued",
         )
 
-    def _emit_progress(phase: str, done_n: int, label: str):
-        if phase == "quick":
-            progress = int(done_n / total * 70) if total else 70
+    def _emit_progress(tier: str, phase_total: int, label: str) -> None:
+        """按阶段分别计算进度与 ETA（P0#2 修复深度阶段溢出 100%）。
+
+        - quick 阶段：进度 = done/phase_total * 70；completed_items = 本阶段已完成数
+        - deep 阶段：进度 = 70 + done/phase_total * 30；completed_items = total
+          （全量 quick 结果已经可查看，不应把 deep 调用次数再次累加到岗位数，
+           否则 deep 第一个任务就会出现 70 + 34/5*30 = 274%）
+        """
+        done = phase_done[tier]
+        if tier == "quick":
+            progress = round(done / max(1, phase_total) * 70)
+            completed_items = done
         else:
-            b_total = max(1, min(top_k, total))
-            progress = 70 + int(done_n / b_total * 30)
-        low, high = _calc_eta_range(durations, total, counts["done"], settings.match_agent_concurrency)
+            progress = 70 + round(done / max(1, phase_total) * 30)
+            completed_items = total
+        low, high = _calc_eta_range(
+            phase_durations[tier], phase_total, done, settings.match_agent_concurrency
+        )
         with lock:
             flight = [{"job_id": j, "job_title": title_map.get(j, "")} for j in in_flight]
-            failed = counts["failed"]
+            failed = phase_failed[tier]
         _update_run(
             task_id,
             "Match Agent",
-            progress=progress,
-            summary=f"已匹配 {counts['done']}/{total}"
+            progress=min(100, progress),
+            summary=f"已匹配 {done}/{phase_total}"
             + (f"（{failed} 个失败）" if failed else ""),
             current_item=label,
-            eta_seconds=_calc_eta(task_id, "Match Agent", total, counts["done"]),
+            eta_seconds=_calc_eta(
+                task_id, "Match Agent", total, phase_done["quick"] + phase_done["deep"]
+            ),
             eta_low=low,
             eta_high=high,
             total_items=total,
-            completed_items=counts["done"],
+            completed_items=min(total, completed_items),
             failed_items=failed,
             in_flight_items=flight,
         )
         # 把在途 item 标记为 running（单条执行记录）
         for j in in_flight:
             upsert_item_run(
-                task_id, "Match Agent", j, title_map.get(j, ""), tier="quick", status="running"
+                task_id, "Match Agent", j, title_map.get(j, ""), tier=tier, status="running"
             )
 
     def _finish_item_run(jid, tier, st, now, status, error=""):
         dur_ms = int((now - st) * 1000) if st is not None else 0
-        started = datetime.utcnow() - timedelta(milliseconds=dur_ms) if st is not None else None
+        started = _utcnow() - timedelta(milliseconds=dur_ms) if st is not None else None
         upsert_item_run(
             task_id, "Match Agent", jid, title_map.get(jid, ""), tier=tier,
             status=status, error=error, started_at=started,
-            finished_at=datetime.utcnow(), duration_ms=dur_ms,
+            finished_at=_utcnow(), duration_ms=dur_ms,
         )
 
-    def _run_phase(tier: str, targets: list[dict], phase: str) -> None:
-        """对 targets 跑一档匹配；tier=quick 全量预排，tier=deep 仅 Top-K 深度。"""
+    def _run_phase(tier: str, targets: list[dict]) -> None:
+        """对 targets 跑一档匹配；tier=quick 全量预排，tier=deep 仅 Top-K / 用户指定 full。"""
         if not targets:
             return
+        phase_total = len(targets)
 
         def _worker(item):
             jid = item["job_id"]
@@ -499,18 +567,20 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         def _on_result(item, oc, _err):
             jid = item["job_id"]
             now = time.monotonic()
+            cache_hit = bool(oc.cache_hit) if oc else False
             with lock:
                 st = start_times.pop(jid, None)
                 in_flight.discard(jid)
-                if st is not None:
-                    durations.append(now - st)
+                # P0#2：缓存命中的耗时≈0，不计入模型耗时样本，否则 ETA 被严重低估
+                if st is not None and not cache_hit:
+                    phase_durations[tier].append(now - st)
             if _is_aborted(task_id, "Match Agent"):
                 raise _AbortedByUser()
-            label = f"正在匹配岗位 {jid}（{counts['done'] + 1}/{total}）"
+            label = f"正在匹配岗位 {jid}（{phase_done[tier] + 1}/{phase_total}）"
             if oc is None or oc.match is None:
                 # 失败也落库，便于前端展示错误并支持单条重试
                 with lock:
-                    counts["failed"] += 1
+                    phase_failed[tier] += 1
                 # worker 抛异常时 oc 为 None（bounded_map 仅传 error）；否则取 oc.error
                 error = (oc.error if oc else None) or (_err or "未知错误")
                 error = str(error)
@@ -518,40 +588,41 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
                     match_core.persist_match_row(
                         task_id, resume_id, jid, None,
                         (oc.key if oc else ""),
-                        (oc.cache_hit if oc else False),
-                        match_mode=tier, status="failed", error=error,
+                        cache_hit,
+                        match_mode=tier,
+                        # P1#11：deep 阶段失败用 partial（quick 结果仍可见），quick 失败才是 failed
+                        status="partial" if tier == "deep" else "failed",
+                        error=error,
                     )
                 except Exception as e:  # noqa: BLE001
                     state.setdefault("errors", []).append(f"match_jobs persist fail job {jid}: {e}")
                 _finish_item_run(jid, tier, st, now, "failed", error=error)
-                counts["done"] += 1
-                _emit_progress(phase, counts["done"], label + " — 失败")
+                with lock:
+                    phase_done[tier] += 1
+                _emit_progress(tier, phase_total, label + " — 失败")
                 return
+            # P1#8：直接用 persist_match_row 的返回值（行 id），不再开临时 Session 查询，
+            # 避免批量运行时累积未关闭的数据库连接。
+            result_id = None
             try:
-                match_core.persist_match_row(
+                result_id = match_core.persist_match_row(
                     task_id, resume_id, jid, oc.match, oc.key, oc.cache_hit,
                     match_mode=tier, status="success",
                 )
             except Exception as e:  # noqa: BLE001
                 state.setdefault("errors", []).append(f"match_jobs persist job {jid}: {e}")
-            if oc.cache_hit:
+            if cache_hit:
                 with lock:
                     cached_jids.add(jid)
             _finish_item_run(jid, tier, st, now, "done")
-            # 记录最终匹配（quick 先写，deep 后覆盖）
-            try:
-                row = (
-                    SessionLocal()
-                    .query(MatchResult)
-                    .filter(MatchResult.task_id == task_id, MatchResult.job_id == jid)
-                    .first()
-                )
-                rid = row.id if row else None
-                final_map[jid] = {"job_id": jid, "result_id": rid, "match": oc.match.model_dump()}
-            except Exception as e:  # noqa: BLE001
-                state.setdefault("errors", []).append(f"match_jobs query job {jid}: {e}")
-            counts["done"] += 1
-            _emit_progress(phase, counts["done"], label)
+            final_map[jid] = {
+                "job_id": jid,
+                "result_id": result_id,
+                "match": oc.match.model_dump(),
+            }
+            with lock:
+                phase_done[tier] += 1
+            _emit_progress(tier, phase_total, label)
 
         bounded_map(
             targets,
@@ -561,7 +632,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         )
 
     # PHASE A：全量 quick（快速模型）出分排序
-    _run_phase("quick", jobs, "quick")
+    _run_phase("quick", jobs)
 
     # 按 quick 分数选出 Top-K（仅成功项参与排序）
     ranked = sorted(
@@ -570,14 +641,31 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         reverse=True,
     )
     if two_tier:
-        # PHASE B：Top-K 用推理模型做深度匹配（覆盖 quick 结果）
-        deep_targets = [{"job_id": v["job_id"]} for v in ranked[:top_k]]
+        # P0#4：深度阶段 = 自动 Top-K 深度复核 ∪ 用户强制 full 深度分析。
+        # 仅取 ranked[:top_k] 会导致用户设置 full 但未进 Top-K 的岗位永远不做深度分析。
+        top_ids = {v["job_id"] for v in ranked[:top_k]}
+        full_ids: set[int] = set()
+        db_full = SessionLocal()
+        try:
+            full_ids = {
+                row.id
+                for row in db_full.query(Job)
+                .filter(
+                    Job.id.in_([x["job_id"] for x in jobs]),
+                    Job.analyze_mode == "full",
+                )
+                .all()
+            }
+        finally:
+            db_full.close()
+        deep_ids = top_ids | full_ids
+        deep_targets = [{"job_id": jid} for jid in deep_ids]
         for t in deep_targets:
             upsert_item_run(
                 task_id, "Match Agent", t["job_id"],
                 title_map.get(t["job_id"], ""), tier="deep", status="queued",
             )
-        _run_phase("deep", deep_targets, "deep")
+        _run_phase("deep", deep_targets)
 
     # 汇总最终匹配结果（按最终分数降序），供下游报告节点使用
     results = sorted(final_map.values(), key=lambda x: x["match"]["score"], reverse=True)
@@ -596,7 +684,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             eta_high=0,
             total_items=total,
             completed_items=0,
-            failed_items=counts["failed"],
+            failed_items=phase_failed["quick"] + phase_failed["deep"],
             in_flight_items=[],
             current_item="",
             finish=True,
@@ -608,7 +696,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             status="success",
             progress=100,
             summary=f"完成 {len(results)} 个岗位评分，最高 {top} 分"
-            + (f"（{counts['failed']} 个失败）" if counts["failed"] else "")
+            + (f"（{phase_failed['quick'] + phase_failed['deep']} 个失败）" if (phase_failed["quick"] + phase_failed["deep"]) else "")
             + (f"（{len(cached_jids)} 个命中缓存）" if cached_jids else "")
             + (f"（Top {top_k} 做深度匹配）" if two_tier else ""),
             output={"count": len(results)},
@@ -617,7 +705,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             eta_high=0,
             total_items=total,
             completed_items=total,
-            failed_items=counts["failed"],
+            failed_items=phase_failed["quick"] + phase_failed["deep"],
             in_flight_items=[],
             current_item="",
             finish=True,
@@ -725,6 +813,12 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
         )
         db.add(report_row)
         db.commit()
+        # 保留最近 100 份历史报告，超出最旧的自动删除
+        try:
+            from routers.reports import _prune_history_reports
+            _prune_history_reports()
+        except Exception:  # noqa: BLE001
+            pass
         state["final_report"] = markdown
         state["report_id"] = report_row.id
         _update_run(

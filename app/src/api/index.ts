@@ -31,11 +31,15 @@ export interface JobProfile {
   education: string;
   experience: string;
   job_type: string;
+  internship_days_per_week?: number | null;
+  internship_duration?: string;
+  graduation_years?: number[];
   required_skills: string[];
   preferred_skills: string[];
   responsibilities: string[];
   requirements: string[];
   risk_tags: string[];
+  jd_summary?: string;
 }
 export interface Job {
   id: number;
@@ -103,6 +107,12 @@ export interface MatchResult {
   error_message: string;
   report_cache_key: string | null;
 }
+export interface PaginatedResults {
+  items: MatchResult[];
+  total: number;
+  page: number;
+  page_size: number;
+}
 export interface ReportItem {
   id: number;
   resume_id: number;
@@ -126,8 +136,25 @@ export interface BatchAnalyzeItem {
   error: string;
 }
 
+export interface AgentHealth {
+  name: string;
+  role: string;
+  model: string;
+  provider: string;
+  enable_thinking: boolean;
+  configured: boolean;
+}
+export interface HealthInfo {
+  status: string;
+  llm_model: string;
+  has_api_key: boolean;
+  llm_base_url?: string;
+  llm_timeout?: number;
+  agents: AgentHealth[];
+}
+
 export const api = {
-  health: () => http.get("/health").then((r) => r.data),
+  health: () => http.get<HealthInfo>("/health").then((r) => r.data),
   testLLM: () => http.post("/api/test-llm").then((r) => r.data),
 
   parseResumeText: (text: string, filename = "pasted.txt") =>
@@ -204,9 +231,9 @@ export const api = {
       )
       .then((r) => r.data),
 
-  listResults: (task_id?: string) =>
+  listResults: (params?: { task_id?: string; page?: number; page_size?: number }) =>
     http
-      .get<MatchResult[]>("/api/match/results", { params: task_id ? { task_id } : {} })
+      .get<PaginatedResults>("/api/match/results", { params: params ?? {} })
       .then((r) => r.data),
   getResult: (id: number) =>
     http.get<MatchResult>(`/api/match/results/${id}`).then((r) => r.data),
@@ -231,10 +258,31 @@ export const api = {
 
   generateReports: (match_result_ids: number[], mode: "standard" | "deep" = "standard") =>
     http
-      .post<{ mode: string; requested: number; generated: number; errors: any[] }>(
-        "/api/reports/generate-batch",
-        { match_result_ids, mode }
+      .post<
+        | { mode: string; requested: number; generated: number; cache_hits: number; errors: any[] }
+        | { task_id: string; status: string; total_items: number; mode: string }
+      >("/api/reports/generate-batch", { match_result_ids, mode })
+      .then((r) => r.data),
+
+  // 深度报告后台任务进度轮询
+  getReportTask: (taskId: string) =>
+    http
+      .get<{ task_id: string; status: string; total: number; done: number; failed: number }>(
+        `/api/reports/tasks/${taskId}`
       )
+      .then((r) => r.data),
+
+  getReportTaskItems: (taskId: string) =>
+    http
+      .get<
+        {
+          item_id: number;
+          item_label: string;
+          status: string;
+          error_message: string;
+          duration_ms: number;
+        }[]
+      >(`/api/reports/tasks/${taskId}/items`)
       .then((r) => r.data),
 
   listReports: () => http.get<ReportItem[]>("/api/reports").then((r) => r.data),

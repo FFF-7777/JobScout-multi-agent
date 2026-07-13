@@ -23,10 +23,16 @@ class Settings(BaseSettings):
     # 简单提取任务用快速低成本模型，关键匹配任务用较强推理模型。
     # 留空则回退到 llm_model。跨厂商兜底（LLM_FALLBACK_*）为可选，
     # 目前复用同一个 OpenAI 兼容 client，仅在主模型持续失败时重试一次。
-    llm_fast_model: str = ""         # Resume / Job / Report Agent：快速低成本
-    llm_reasoning_model: str = ""    # Match Agent：较强推理模型
+    llm_fast_model: str = ""         # Resume / Job / Match(quick)：快速低成本
+    llm_reasoning_model: str = ""    # Match(deep)：强推理，开启思考模式
     llm_vision_model: str = ""       # 多模态兜底（预留，当前未启用）
+    llm_report_model: str = ""       # Report Agent：慎用思考影响 JSON 输出
+    llm_ocr_model: str = ""          # OCR 文字识别（如 qwen3.5-ocr）
     llm_fallback_model: str = ""     # 失败兜底（可选第二厂商）
+    # ── 思考模式开关 ──
+    llm_fast_enable_thinking: bool = False      # Resume / Job / Match(quick)
+    llm_reasoning_enable_thinking: bool = True  # Match(deep)
+    llm_report_enable_thinking: bool = False    # Report Agent
     # 预留厂商字段：当前仅 dashscope 已接线，跨厂商切换为后续可选扩展点
     llm_fast_provider: str = "dashscope"
     llm_reasoning_provider: str = "dashscope"
@@ -47,9 +53,10 @@ class Settings(BaseSettings):
     match_agent_concurrency: int = 4   # Match Agent：强模型、输入大，保守
     report_agent_concurrency: int = 6  # Report Agent：快速模型、输入精简后可稍高
 
-    # 单次任务中「深度分析（full，额外结合简历原文）」岗位数上限
-    # 仅在工作流启动时校验选中集合，不限制数据库里 full 总数
-    full_mode_limit: int = 10
+    # 单次任务中「深度分析（full，额外结合简历原文）」岗位数上限。
+    # 0 表示不限制；历史默认值 10 用于降低 LLM 成本与耗时，用户可按需调大。
+    # 仅在工作流启动时校验选中集合，不限制数据库里 full 总数。
+    full_mode_limit: int = 0
 
     # 报告自动生成策略：
     #   top_k -> 仅对匹配度最高的 N 个岗位生成（默认，避免为全部岗位消耗 LLM）
@@ -59,6 +66,9 @@ class Settings(BaseSettings):
     # 深度 AI 报告通过 POST /api/reports/generate-batch 按需触发（mode=deep）。
     report_auto_policy: str = "top_k"
     report_auto_top_k: int = 5
+
+    # 历史报告保留数量上限（按创建时间降序，超出最旧的自动删除）
+    report_history_limit: int = 100
 
     # 匹配两档策略（P1#7）：全量岗位先用「快速模型」出分排序（省 LLM 成本），
     # 仅匹配度最高的 N 个岗位再用「推理模型」做深度匹配。

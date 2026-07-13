@@ -55,16 +55,31 @@ def _get_client() -> OpenAI:
 def _resolve_model(role: str) -> str:
     """把模型角色映射成具体模型名；未配置时回退到全局 llm_model。
 
-    角色：fast（快速低成本）/ reasoning（强推理）/ vision（多模态兜底，预留）/ fallback（故障切换）。
+    角色：fast（快速低成本）/ reasoning（强推理+思考）/
+          report（报告生成）/ vision（多模态兜底，预留）/
+          ocr（截图识别）/ fallback（故障切换）。
     """
     s = get_settings()
     mapping = {
         "fast": s.llm_fast_model or s.llm_model,
         "reasoning": s.llm_reasoning_model or s.llm_model,
+        "report": s.llm_report_model or s.llm_reasoning_model or s.llm_model,
         "vision": s.llm_vision_model or s.llm_model,
+        "ocr": s.llm_ocr_model or s.llm_model,
         "fallback": s.llm_fallback_model or s.llm_model,
     }
     return mapping.get(role, s.llm_model)
+
+
+def _resolve_enable_thinking(role: str) -> bool:
+    """根据角色判断是否启用思考模式。"""
+    s = get_settings()
+    mapping = {
+        "fast": s.llm_fast_enable_thinking,
+        "reasoning": s.llm_reasoning_enable_thinking,
+        "report": s.llm_report_enable_thinking,
+    }
+    return mapping.get(role, False)
 
 
 def _with_retry(fn):
@@ -104,16 +119,20 @@ def chat_text(
     model = _resolve_model(model_role)
     fallback = _resolve_model("fallback")
     use_fallback = bool(fallback) and fallback != model
+    enable_thinking = _resolve_enable_thinking(model_role)
 
     def _do(use_model: str) -> str:
-        resp = client.chat.completions.create(
-            model=use_model,
-            temperature=settings.llm_temperature if temperature is None else temperature,
-            messages=[
+        kwargs: dict = {
+            "model": use_model,
+            "temperature": settings.llm_temperature if temperature is None else temperature,
+            "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-        )
+        }
+        if enable_thinking:
+            kwargs["extra_body"] = {"enable_thinking": True}
+        resp = client.chat.completions.create(**kwargs)
         return (resp.choices[0].message.content or "").strip()
 
     try:
@@ -132,28 +151,34 @@ def chat_json(
 ) -> dict[str, Any]:
     """要求模型输出 JSON 对象，返回解析后的 dict。失败重试一次。
 
-    model_role：fast / reasoning / vision / fallback，决定用哪一档模型。
-    主模型持续失败时，若配置了 llm_fallback_model 且不同，则用兜底模型再试一次。
+    model_role：fast / reasoning / report / vision / fallback。
+    思考模式下跳过 response_format（与 reasoning 不兼容），改用 prompt 指令约束 JSON。
     """
     settings = get_settings()
     client = _get_client()
     model = _resolve_model(model_role)
     fallback = _resolve_model("fallback")
     use_fallback = bool(fallback) and fallback != model
+    enable_thinking = _resolve_enable_thinking(model_role)
 
     def _call(use_model: str, extra_hint: str = "") -> str:
         def _do() -> str:
-            resp = client.chat.completions.create(
-                model=use_model,
-                temperature=settings.llm_temperature
+            kwargs: dict = {
+                "model": use_model,
+                "temperature": settings.llm_temperature
                 if temperature is None
                 else temperature,
-                response_format={"type": "json_object"},
-                messages=[
+                "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user + extra_hint},
                 ],
-            )
+            }
+            if enable_thinking:
+                # 思考模式与 response_format 不兼容，用 prompt 强制 JSON
+                kwargs["extra_body"] = {"enable_thinking": True}
+            else:
+                kwargs["response_format"] = {"type": "json_object"}
+            resp = client.chat.completions.create(**kwargs)
             return (resp.choices[0].message.content or "").strip()
 
         return _with_retry(_do)

@@ -46,7 +46,7 @@ def run(
     match: MatchResultModel,
     *,
     resume_text: str | None = None,
-    model_role: str = "fast",
+    model_role: str = "report",
 ) -> JobReport:
     """生成单岗位投递建议 + 面试准备。
 
@@ -205,6 +205,93 @@ def build_markdown(
         if r.improvement_tips:
             lines.append("\n**短板补习建议：**")
             lines.extend(f"- {p}" for p in r.improvement_tips)
+        lines.append("\n---\n")
+
+    return "\n".join(lines)
+
+
+def build_hybrid_report_markdown(
+    resume: ResumeProfile,
+    items: list[dict],
+) -> str:
+    """深度报告生成完成后重新聚合的 Markdown。
+
+    items: [{"job": JobProfile, "match": MatchResultModel, "report": dict}]
+    report dict 可以是 basic（mode=standard，含 interview_focus）
+    或 deep（mode=deep，含 interview_questions / boss_greeting / hr_message 等）。
+    混合展示：深度内容优先，基础内容兜底。
+    """
+    lines: list[str] = []
+    has_deep = any((it.get("report") or {}).get("mode") == "deep" for it in items)
+    lines.append(
+        f"# JobScout 岗位分析报告{'（含深度分析）' if has_deep else ''} — {resume.name or '候选人'}\n"
+    )
+    lines.append("## 候选人画像\n")
+    lines.append(f"- **目标岗位**：{'、'.join(resume.target_roles) or '（未填写）'}")
+    lines.append(f"- **技能**：{'、'.join(resume.skills) or '（未填写）'}")
+    if resume.strengths:
+        lines.append(f"- **优势**：{'、'.join(resume.strengths)}")
+    if resume.weaknesses:
+        lines.append(f"- **短板**：{'、'.join(resume.weaknesses)}")
+    lines.append("")
+
+    ordered = sorted(items, key=lambda x: x["match"].score, reverse=True)
+    lines.append("## 岗位推荐排序\n")
+    lines.append("| 排名 | 公司 | 岗位 | 城市 | 薪资 | 匹配度 | 等级 | 建议 |")
+    lines.append("| ---: | --- | --- | --- | --- | ---: | :--: | --- |")
+    for i, it in enumerate(ordered, 1):
+        j: JobProfile = it["job"]
+        m: MatchResultModel = it["match"]
+        lines.append(
+            f"| {i} | {j.company_name} | {j.job_title} | {j.city} | {j.salary} "
+            f"| {m.score} | {m.level} | {m.recommendation} |"
+        )
+    lines.append("")
+
+    lines.append("## 岗位详细分析\n")
+    for i, it in enumerate(ordered, 1):
+        j: JobProfile = it["job"]
+        m: MatchResultModel = it["match"]
+        r: dict = it.get("report") or {}
+        is_deep = r.get("mode") == "deep"
+        label = "深度分析" if is_deep else "基础分析"
+        lines.append(
+            f"### {i}. {j.company_name} — {j.job_title}（{m.level} / {m.score} 分）"
+            f" <sub><sup>[{label}]</sup></sub>\n"
+        )
+        lines.append(f"**推荐结论**：{r.get('conclusion', m.recommendation)}\n")
+        if m.matched_points:
+            lines.append("**匹配点：**")
+            lines.extend(f"- {p}" for p in m.matched_points)
+        if m.missing_points:
+            lines.append("\n**缺口分析：**")
+            lines.extend(f"- {p}" for p in m.missing_points)
+        risk = (r.get("risks") or []) + (m.risk_notes or [])
+        if risk:
+            lines.append("\n**风险提醒：**")
+            lines.extend(f"- {p}" for p in risk)
+        if is_deep:
+            iq = r.get("interview_questions") or []
+            if iq:
+                lines.append("\n**面试可能问题：**")
+                lines.extend(f"- {p}" for p in iq)
+            pt = r.get("project_talking_points") or []
+            if pt:
+                lines.append("\n**项目讲解重点：**")
+                lines.extend(f"- {p}" for p in pt)
+            if r.get("boss_greeting"):
+                lines.append(f"\n**BOSS 打招呼话术：**\n> {r['boss_greeting']}")
+            if r.get("hr_message"):
+                lines.append(f"\n**HR 私信：**\n> {r['hr_message']}")
+            imp = r.get("improvement_tips") or []
+            if imp:
+                lines.append("\n**短板补习建议：**")
+                lines.extend(f"- {p}" for p in imp)
+        else:
+            ifv = r.get("interview_focus") or []
+            if ifv:
+                lines.append("\n**面试准备重点：**")
+                lines.extend(f"- {p}" for p in ifv)
         lines.append("\n---\n")
 
     return "\n".join(lines)

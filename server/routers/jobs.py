@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -21,6 +21,10 @@ from schemas.job import (
     ImportImageFailed,
 )
 from services import baidu_ocr, document_parser, job_agent, url_fetcher
+from services.jd_preprocessor import clean_ocr_jd
+from services.job_parse_queue import enqueue_parse
+
+logger = logging.getLogger(__name__)
 
 # 延迟导入 OCR 服务商模块，运行时根据 settings.ocr_provider 选择
 def _get_ocr_service():
@@ -37,40 +41,50 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
 def _parse_job_by_id(job_id: int) -> None:
-    """在独立会话里对单个岗位跑 Job Agent 解析并写回（供后台自动解析线程调用）。"""
+    """在独立数据库会话中解析单个岗位（供后台 daemon 线程调用）。
+
+    整个「标记解析中 → LLM 解析 → 文本清洗 → 字段写回 → 数据库提交」
+    全部包在异常处理里，任何一步失败都标记 parse_status=failed 并写入
+    「异常类型: 真实消息」便于定位问题来源。
+    """
     from database import SessionLocal
 
-    s = SessionLocal()
+    db = SessionLocal()
     try:
-        job = s.get(Job, job_id)
+        job = db.get(Job, job_id)
         if job is None:
             return
+
+        job.parse_status = "parsing"
+        job.parse_error = ""
+        db.commit()
+
         hints = {
             "company_name": job.company_name,
             "job_title": job.job_title,
             "city": job.city,
             "salary": job.salary,
         }
-        try:
-            profile = job_agent.run(job.jd_text, hints, source=job.source)
-        except Exception:
+        profile = job_agent.run(job.jd_text, hints, source=job.source, model_role="fast")
+        _apply_analysis(job, profile, db)  # 内部已 commit
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("岗位自动解析失败，job_id=%s", job_id)
+        # 重新获取，避免使用异常状态中的 ORM 对象
+        job = db.get(Job, job_id)
+        if job is not None:
             job.parse_status = "failed"
-            job.parse_error = "模型返回异常"
-            s.commit()
-            return
-        _apply_analysis(job, profile, s)
+            job.parse_error = f"{type(exc).__name__}: {exc}"[:500]
+            db.commit()
     finally:
-        s.close()
+        db.close()
 
 
 def _background_parse(job_ids: list[int]) -> None:
-    """导入后自动解析：后台并发跑 Job Agent，更新 parse_status，不阻塞导入接口返回。"""
-    if not job_ids:
-        return
-    settings = get_settings()
-    max_c = max(1, min(settings.job_agent_concurrency, len(job_ids)))
-    with ThreadPoolExecutor(max_workers=max_c) as pool:
-        list(pool.map(_parse_job_by_id, job_ids))
+    """(已弃用，改用 job_parse_queue) 导入后自动解析。"""
+    from services.job_parse_queue import enqueue_parse
+
+    enqueue_parse(job_ids)
 
 _SPLIT_RE = re.compile(r"\n\s*(?:-{3,}|={3,}|#{2,}|\n)\s*\n")
 _MAX_UPLOAD = 10 * 1024 * 1024  # 10 MiB 上传上限
@@ -104,7 +118,7 @@ def import_text(req: JobImportTextRequest, db: Session = Depends(get_db)):
         created.append(_to_out(job, db))
         created_ids.append(job.id)
     # 导入后自动解析（不阻塞返回）
-    threading.Thread(target=_background_parse, args=(created_ids,), daemon=True).start()
+    enqueue_parse(created_ids)
     return created
 
 
@@ -132,7 +146,7 @@ async def import_file(
         db.commit()
         created.append(_to_out(job, db))
         created_ids.append(job.id)
-    threading.Thread(target=_background_parse, args=(created_ids,), daemon=True).start()
+    enqueue_parse(created_ids)
     return created
 
 
@@ -155,7 +169,7 @@ def import_url(req: JobImportUrlRequest, db: Session = Depends(get_db)):
     db.commit()
     created_id = job.id
     out = _to_out(job, db)
-    threading.Thread(target=_background_parse, args=([created_id],), daemon=True).start()
+    enqueue_parse([created_id])
     return out
 
 
@@ -220,7 +234,7 @@ async def import_images(
         raise HTTPException(422, f"所有图片识别均失败：{detail}")
 
     # OCR 导入后自动解析（不阻塞返回）
-    threading.Thread(target=_background_parse, args=(created_ids,), daemon=True).start()
+    enqueue_parse(created_ids)
     return ImportImagesResult(created=created, failed=failed)
 
 
@@ -251,18 +265,22 @@ def analyze_job(job_id: int, db: Session = Depends(get_db)):
     }
     try:
         profile = job_agent.run(job.jd_text, hints, source=job.source)
-    except Exception:
+    except Exception as exc:
         job.parse_status = "failed"
-        job.parse_error = "模型返回异常"
+        job.parse_error = str(exc)[:500]
         db.commit()
-        raise HTTPException(502, "岗位分析失败：模型返回异常，请稍后重试")
+        raise HTTPException(502, f"岗位分析失败：{str(exc)[:200]}")
     _apply_analysis(job, profile, db)
     db.refresh(job)
     return _to_out(job, db)
 
 
 def _apply_analysis(job: Job, profile, db: Session) -> None:
-    """把 JobProfile 写回 job 主表与 job_analysis 表。供 analyze 与 batch 复用。"""
+    """将 JobProfile 逐字段写入 job 主表与 job_analysis 表。
+
+    parse_status=success 在全部字段写入后设置，避免出现「状态成功但数据未保存」。
+    """
+    # 已有表格字段优先保留；为空时用 Agent 结果补充
     job.company_name = job.company_name or profile.company_name
     job.job_title = job.job_title or profile.job_title
     job.city = job.city or profile.city
@@ -270,16 +288,19 @@ def _apply_analysis(job: Job, profile, db: Session) -> None:
     job.education = job.education or profile.education
     job.experience = job.experience or profile.experience
     # 列表预览摘要（LLM jd_summary，为空时 job_agent 已用结构化字段兜底拼接）
-    job.jd_summary = profile.jd_summary
-    # OCR 来源：保留清洗后正文，便于详情页对照原始 OCR
-    if job.source == "ocr_image":
-        job.cleaned_jd_text = clean_ocr_jd(job.jd_text)
-    job.parse_status = "success"
-    job.parse_error = ""
+    job.jd_summary = profile.jd_summary or ""
+    # 字段写入后，再外部分析表
     existing = db.query(JobAnalysis).filter(JobAnalysis.job_id == job.id).first()
     if existing is None:
         existing = JobAnalysis(job_id=job.id)
         db.add(existing)
+        try:
+            db.flush()  # 触发 INSERT，让唯一约束尽早暴露
+        except Exception:
+            db.rollback()
+            existing = db.query(JobAnalysis).filter(JobAnalysis.job_id == job.id).first()
+            if existing is None:
+                raise  # 真异常，向上传播
     existing.job_type = profile.job_type
     existing.required_skills = profile.required_skills
     existing.preferred_skills = profile.preferred_skills
@@ -287,6 +308,14 @@ def _apply_analysis(job: Job, profile, db: Session) -> None:
     existing.requirements = profile.requirements
     existing.risk_tags = profile.risk_tags
     existing.analysis_json = profile.model_dump()
+    # OCR 来源：保留清洗后正文
+    if job.source == "ocr_image":
+        job.cleaned_jd_text = clean_ocr_jd(job.jd_text)
+    else:
+        job.cleaned_jd_text = job.cleaned_jd_text or job.jd_text
+    # 所有字段写入成功后，最终标记 success
+    job.parse_status = "success"
+    job.parse_error = ""
     db.commit()
 
 
@@ -335,14 +364,16 @@ class _AnalyzeModeUpdate(BaseModel):
     analyze_mode: str
 
 
-_FULL_MODE_LIMIT = 10  # 兼容旧引用；真实上限由 config.full_mode_limit 控制（启动任务时校验）
+# 深度分析岗位无硬性数量上限（config.full_mode_limit=0）。
+# 单条 set_analyze_mode 接口、启动任务时的 full_count 校验都由 config 统一控制。
+# 此处保留注释，标记历史常量已弃用。
 
 
 @router.put("/{job_id}/analyze-mode", response_model=JobOut)
 def set_analyze_mode(
     job_id: int, req: _AnalyzeModeUpdate, db: Session = Depends(get_db)
 ):
-    """设置单条岗位的分析模式。全文模式会被前端校验 N<=10 限制（后端也兜底一次）。"""
+    """设置单条岗位的分析模式。深度分析无硬性数量上限（受 LLM 成本与耗时影响）。"""
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "岗位不存在")
@@ -357,7 +388,7 @@ def set_analyze_mode(
 
 @router.get("/full-mode/count")
 def count_full_mode(db: Session = Depends(get_db)):
-    """深度分析岗位数（含上限），用于前端校验。"""
+    """深度分析岗位数（参考用，无硬性上限）。"""
     n = db.query(Job).filter(Job.analyze_mode == "full").count()
     return {"count": n, "limit": get_settings().full_mode_limit}
 
@@ -405,13 +436,25 @@ def analyze_batch(
         futures = {pool.submit(_do, jid): jid for jid in ids}
         for fut in as_completed(futures):
             jid, profile, err = fut.result()
+            job = jobs.get(jid)
             if err is not None:
-                results[jid] = _BatchAnalyzeItem(id=jid, ok=False, error=err)
+                if job is not None:
+                    job.parse_status = "failed"
+                    job.parse_error = str(err)[:500]
+                    db.commit()
+                results[jid] = _BatchAnalyzeItem(id=jid, ok=False, error=str(err))
                 continue
             try:
-                job = jobs[jid]
-                _apply_analysis(job, profile, db)
+                if job is None:
+                    raise ValueError("岗位不存在")
+                _apply_analysis(job, profile, db)  # 内部已 commit + 标记 success
                 results[jid] = _BatchAnalyzeItem(id=jid, ok=True)
-            except Exception as e:  # noqa: BLE001
-                results[jid] = _BatchAnalyzeItem(id=jid, ok=False, error=str(e))
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                job = db.get(Job, jid)
+                if job is not None:
+                    job.parse_status = "failed"
+                    job.parse_error = f"{type(exc).__name__}: {exc}"[:500]
+                    db.commit()
+                results[jid] = _BatchAnalyzeItem(id=jid, ok=False, error=str(exc))
     return [results[i] for i in ids]

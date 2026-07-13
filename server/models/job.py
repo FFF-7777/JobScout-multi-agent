@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -38,6 +38,9 @@ class Job(Base):
 
 class JobAnalysis(Base):
     __tablename__ = "job_analysis"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_job_analysis_job_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[int] = mapped_column(Integer, index=True)

@@ -1,0 +1,12 @@
+JobScout 数据库迁移（Alembic）
+=============================
+
+avril 基线迁移 `5cbd1bb4d207`：空变更，标记旧库状态。
+
+迁移方式由 `database.py:init_db()` 自动管理：
+1. 新/旧库（无 alembic_version 表）：走传统 `Base.metadata.create_all` + `_migrate_*` → stamp head
+2. 已启用 Alembic：`alembic upgrade head`
+
+新增迁移脚本：
+  alembic revision --autogenerate -m "描述"
+  alembic upgrade head

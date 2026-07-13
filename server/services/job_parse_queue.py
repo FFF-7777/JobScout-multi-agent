@@ -22,6 +22,7 @@ _logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 0.5  # 秒
 _daemon_started = False
+_daemon_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 _consecutive_errors = 0
 _MAX_CONSECUTIVE_ERRORS = 10
@@ -85,7 +86,7 @@ def _daemon_loop() -> None:
                     "pausing 60s before retry",
                     _consecutive_errors,
                 )
-                time.sleep(60)
+                _stop_event.wait(60)
                 _consecutive_errors = 0
         # 用 wait 替代 sleep，支持 stop_event 立即退出
         _stop_event.wait(_POLL_INTERVAL)
@@ -131,6 +132,10 @@ def _parse_single(args: tuple[int, int]) -> None:
         if error:
             row.status = "failed"
             row.error_message = error
+            job = db.get(Job, jid)
+            if job is not None:
+                job.parse_status = "failed"
+                job.parse_error = error
         else:
             row.status = "done"
         row.finished_at = _utcnow()
@@ -171,21 +176,28 @@ def start_parse_daemon() -> None:
     注意：必须用 daemon=False，否则 _stop_event 来不及触发就被强制终止。
     服务退出时 lifespan shutdown 阶段调用 stop_parse_daemon() 优雅退出。
     """
-    global _daemon_started
+    global _daemon_started, _daemon_thread
     if _daemon_started:
         return
     _daemon_started = True
+    _stop_event.clear()
     _recover_stale_tasks()
-    t = threading.Thread(target=_daemon_loop, daemon=False)
-    t.start()
+    _daemon_thread = threading.Thread(target=_daemon_loop, daemon=False)
+    _daemon_thread.start()
     _logger.info("后台解析 daemon 已启动")
 
 
 def stop_parse_daemon(timeout: float = 10.0) -> None:
     """优雅退出后台解析 daemon：设 stop 信号，等待当前批次完成后线程结束。"""
-    global _daemon_started
+    global _daemon_started, _daemon_thread
     if not _daemon_started:
         return
     _stop_event.set()
+    if _daemon_thread is not None:
+        _daemon_thread.join(timeout=max(0.0, timeout))
+    if _daemon_thread is not None and _daemon_thread.is_alive():
+        _logger.warning("后台解析 daemon 未在 %.1fs 内退出", timeout)
+        return
+    _daemon_thread = None
     _daemon_started = False
-    _logger.info("后台解析 daemon 已发送停止信号（timeout=%.1fs）", timeout)
+    _logger.info("后台解析 daemon 已停止")

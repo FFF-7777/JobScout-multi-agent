@@ -140,7 +140,7 @@ def run_single_match(
 
 
 def persist_match_row(
-    task_id: str,
+    task_id: str | None,
     resume_id: int,
     jid: int,
     match,

@@ -118,10 +118,23 @@ export interface ReportItem {
   id: number;
   resume_id: number;
   task_id: string | null;
+  mode: "standard" | "deep";
   title: string;
   summary: string;
   markdown_content: string;
   created_at: string | null;
+}
+
+export interface ReportTaskItem {
+  task_id: string;
+  mode: "standard" | "deep";
+  status: string;
+  total: number;
+  done: number;
+  failed: number;
+  current_item: string;
+  created_at: string | null;
+  finished_at: string | null;
 }
 
 export interface ResumeSummary {
@@ -304,6 +317,9 @@ export const api = {
         }[]
       >(`/api/reports/tasks/${taskId}/items`)
       .then((r) => r.data),
+
+  listActiveReportTasks: () =>
+    http.get<ReportTaskItem[]>("/api/reports/tasks").then((r) => r.data),
 
   listReports: () => http.get<ReportItem[]>("/api/reports").then((r) => r.data),
   getReport: (id: number) => http.get<ReportItem>(`/api/reports/${id}`).then((r) => r.data),

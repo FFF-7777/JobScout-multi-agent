@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from config import get_settings
 from database import get_db
-from models import Job, JobAnalysis, MatchResult
+from models import AgentItemRun, Job, JobAnalysis, JobParseTask, JobReport, MatchResult
 from schemas.job import (
     JobImportTextRequest,
     JobImportUrlRequest,
@@ -38,6 +39,38 @@ def _get_ocr_service():
     return baidu_ocr, "baidu"
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+_SUPPORTED_IMPORT_HOSTS = {"zhaopin.com", "www.zhaopin.com"}
+_GUIDED_IMPORT_HOSTS = {
+    "zhipin.com": "BOSS直聘",
+    "www.zhipin.com": "BOSS直聘",
+    "lagou.com": "拉勾",
+    "www.lagou.com": "拉勾",
+    "liepin.com": "猎聘",
+    "www.liepin.com": "猎聘",
+    "m.liepin.com": "猎聘",
+    "51job.com": "前程无忧 51job",
+    "www.51job.com": "前程无忧 51job",
+    "jobs.51job.com": "前程无忧 51job",
+}
+
+
+def _job_url_import_error(platform: str | None = None) -> str:
+    if platform:
+        return (
+            f"当前仅稳定支持智联招聘链接导入；{platform} 链接受验证码、登录态或反爬限制影响，"
+            "请改用“粘贴 JD”或“截图 OCR 导入”。"
+        )
+    return "当前仅稳定支持智联招聘链接导入，请改用智联招聘链接，或使用“粘贴 JD / 截图 OCR 导入”。"
+
+
+def _validate_import_url_host(url: str) -> None:
+    host = (urlparse(url).hostname or "").lower()
+    if host in _SUPPORTED_IMPORT_HOSTS:
+        return
+    if host in _GUIDED_IMPORT_HOSTS:
+        raise HTTPException(400, _job_url_import_error(_GUIDED_IMPORT_HOSTS[host]))
+    raise HTTPException(400, _job_url_import_error())
 
 
 def _parse_job_by_id(job_id: int) -> None:
@@ -155,6 +188,7 @@ def import_url(req: JobImportUrlRequest, db: Session = Depends(get_db)):
     url = req.url.strip()
     if not url:
         raise HTTPException(400, "链接为空")
+    _validate_import_url_host(url)
     try:
         jd_text = url_fetcher.fetch(url)
     except ValueError as e:
@@ -321,14 +355,21 @@ def _apply_analysis(job: Job, profile, db: Session) -> None:
 
 @router.delete("/{job_id}")
 def delete_job(job_id: int, db: Session = Depends(get_db)):
-    """删除单个岗位；级联清理 job_analysis 与不带 task_id 的 match_results。"""
+    """删除单个岗位及其解析任务、匹配结果和单岗位报告。"""
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "岗位不存在")
-    db.query(JobAnalysis).filter(JobAnalysis.job_id == job_id).delete()
-    db.query(MatchResult).filter(
-        MatchResult.job_id == job_id, MatchResult.task_id.is_(None)
+    result_ids = [r.id for r in db.query(MatchResult.id).filter(MatchResult.job_id == job_id)]
+    if result_ids:
+        db.query(JobReport).filter(JobReport.match_result_id.in_(result_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(AgentItemRun).filter(
+        AgentItemRun.agent_name == "Match Agent", AgentItemRun.item_id == job_id
     ).delete(synchronize_session=False)
+    db.query(JobParseTask).filter(JobParseTask.job_id == job_id).delete(synchronize_session=False)
+    db.query(JobAnalysis).filter(JobAnalysis.job_id == job_id).delete(synchronize_session=False)
+    db.query(MatchResult).filter(MatchResult.job_id == job_id).delete(synchronize_session=False)
     db.delete(job)
     db.commit()
     return {"ok": True, "id": job_id}
@@ -352,9 +393,22 @@ def batch_delete_jobs(
     db.query(JobAnalysis).filter(JobAnalysis.job_id.in_(found_ids)).delete(
         synchronize_session=False
     )
-    db.query(MatchResult).filter(
-        MatchResult.job_id.in_(found_ids), MatchResult.task_id.is_(None)
+    result_ids = [
+        r.id for r in db.query(MatchResult.id).filter(MatchResult.job_id.in_(found_ids))
+    ]
+    if result_ids:
+        db.query(JobReport).filter(JobReport.match_result_id.in_(result_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(AgentItemRun).filter(
+        AgentItemRun.agent_name == "Match Agent", AgentItemRun.item_id.in_(found_ids)
     ).delete(synchronize_session=False)
+    db.query(JobParseTask).filter(JobParseTask.job_id.in_(found_ids)).delete(
+        synchronize_session=False
+    )
+    db.query(MatchResult).filter(MatchResult.job_id.in_(found_ids)).delete(
+        synchronize_session=False
+    )
     db.query(Job).filter(Job.id.in_(found_ids)).delete(synchronize_session=False)
     db.commit()
     return {"ok": True, "deleted": found_ids}

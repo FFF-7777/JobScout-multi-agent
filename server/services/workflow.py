@@ -478,7 +478,6 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     settings = get_settings()
     resume_id = state["resume_id"]
     two_tier = bool(settings.match_two_tier)
-    top_k = max(1, settings.match_quick_top_k)
 
     # 并发可视化 / 计时所需的线程安全容器
     lock = threading.Lock()
@@ -497,7 +496,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     for it in jobs:
         upsert_item_run(
             task_id, "Match Agent", it["job_id"], title_map.get(it["job_id"], ""),
-            tier="quick", status="queued",
+            tier="quick" if two_tier else "deep", status="queued",
         )
 
     def _emit_progress(tier: str, phase_total: int, label: str) -> None:
@@ -512,9 +511,12 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         if tier == "quick":
             progress = round(done / max(1, phase_total) * 70)
             completed_items = done
-        else:
+        elif two_tier:
             progress = 70 + round(done / max(1, phase_total) * 30)
             completed_items = total
+        else:
+            progress = round(done / max(1, phase_total) * 100)
+            completed_items = done
         low, high = _calc_eta_range(
             phase_durations[tier], phase_total, done, settings.match_agent_concurrency
         )
@@ -633,21 +635,10 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             on_result=_on_result,
         )
 
-    # PHASE A：全量 quick（快速模型）出分排序
-    _run_phase("quick", jobs)
-
-    # 按 quick 分数选出 Top-K（仅成功项参与排序）
-    ranked = sorted(
-        (v for v in final_map.values() if v["match"].get("score") is not None),
-        key=lambda x: x["match"]["score"],
-        reverse=True,
-    )
+    deep_count = 0
     if two_tier:
-        # P0#4：深度阶段 = 自动 Top-K 深度复核 ∪ 用户强制 full 深度分析。
-        # 关键 UX 修正：analyze_mode=summary 的岗位不参与 deep 阶段。
-        # 用户明明选了"快速分析"，不应该再被偷偷加一次 deep（reasoning 模型+思考模式 1m+/次）。
-        top_ids = {v["job_id"] for v in ranked[:top_k]}
-        # 必须先知道哪些岗位是 full 模式，summary 模式一律不进 deep
+        # 两阶段：所有岗位先快速评分；用户明确选择 full 的岗位再做深度分析。
+        _run_phase("quick", jobs)
         full_ids: set[int] = set()
         db_full = SessionLocal()
         try:
@@ -662,17 +653,19 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             }
         finally:
             db_full.close()
-        # Top-K 只在 full 模式里取（summary 模式岗不参与 Top-K 深度复核）
-        full_top_ids = {jid for jid in top_ids if jid in full_ids}
-        deep_ids = full_top_ids | full_ids
-        if deep_ids:
-            deep_targets = [{"job_id": jid} for jid in deep_ids]
+        deep_count = len(full_ids)
+        if full_ids:
+            deep_targets = [{"job_id": jid} for jid in full_ids]
             for t in deep_targets:
                 upsert_item_run(
                     task_id, "Match Agent", t["job_id"],
                     title_map.get(t["job_id"], ""), tier="deep", status="queued",
                 )
             _run_phase("deep", deep_targets)
+    else:
+        # 关闭两阶段时，按配置语义让所有岗位直接使用推理模型。
+        deep_count = total
+        _run_phase("deep", jobs)
 
     # 汇总最终匹配结果（按最终分数降序），供下游报告节点使用
     results = sorted(final_map.values(), key=lambda x: x["match"]["score"], reverse=True)
@@ -705,7 +698,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             summary=f"完成 {len(results)} 个岗位评分，最高 {top} 分"
             + (f"（{phase_failed['quick'] + phase_failed['deep']} 个失败）" if (phase_failed["quick"] + phase_failed["deep"]) else "")
             + (f"（{len(cached_jids)} 个命中缓存）" if cached_jids else "")
-            + (f"（Top {top_k} 做深度匹配）" if two_tier else ""),
+            + (f"（{deep_count} 个岗位做深度匹配）" if deep_count else ""),
             output={"count": len(results)},
             eta_seconds=0,
             eta_low=0,

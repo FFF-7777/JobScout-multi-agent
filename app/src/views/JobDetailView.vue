@@ -37,6 +37,8 @@ const props = withDefaults(
   defineProps<{
     /** 当作为 modal 嵌入时，从父组件传 jobId 覆盖 route.params.id */
     jobIdProp?: number | null;
+    /** ResultsView 传入精确匹配结果，避免同岗位的多份简历结果串线 */
+    matchResultIdProp?: number | null;
     /** 当作为 modal 嵌入时，禁用内部跳路由（无效 ID 时不 router.replace） */
     embedded?: boolean;
     /**
@@ -176,11 +178,12 @@ async function load(targetId?: number | null) {
     job.value = await api.getJob(id);
     // 只在需要显示分析结果时才去拉
     if (showAnalysis.value) {
-      // 优先按 job_id 查最新匹配结果（不依赖 store.taskId），
-      // 失败再退到 listResults，避免在 ResultsView 弹窗时 store.taskId 为空
+      // ResultsView 传入结果 ID 时精确查询；独立岗位页再查该岗位最新结果。
       let r: MatchResult | null = null;
       try {
-        r = await api.getResultByJob(id);
+        r = props.matchResultIdProp
+          ? await api.getResult(props.matchResultIdProp)
+          : await api.getResultByJob(id);
       } catch (e) {
         // 404 / 网络错误退到 listResults
       }
@@ -201,9 +204,9 @@ async function load(targetId?: number | null) {
 
 onMounted(() => load());
 watch(
-  () => props.jobIdProp,
-  (newId, oldId) => {
-    if (newId !== oldId) load(newId);
+  () => [props.jobIdProp, props.matchResultIdProp] as const,
+  ([newJobId], [oldJobId]) => {
+    if (newJobId !== oldJobId || props.matchResultIdProp) load(newJobId);
   }
 );
 

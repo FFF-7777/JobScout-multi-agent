@@ -40,6 +40,26 @@ from services.item_run import upsert_item_run
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
+def _detect_report_mode(report: Report) -> str:
+    text = " ".join(
+        part for part in [report.title or "", report.summary or "", report.markdown_content or ""] if part
+    )
+    return "deep" if "深度分析" in text or "深度报告" in text else "standard"
+
+
+def _to_report_out(report: Report) -> ReportOut:
+    return ReportOut(
+        id=report.id,
+        resume_id=report.resume_id,
+        task_id=report.task_id,
+        mode=_detect_report_mode(report),
+        title=report.title,
+        summary=report.summary,
+        markdown_content=report.markdown_content,
+        created_at=report.created_at,
+    )
+
+
 class ReportGenerateRequest(BaseModel):
     match_result_ids: list[int] = Field(default_factory=list)
     # standard：代码模板，立即生成，不调 LLM；deep：调 LLM 生成深度报告
@@ -318,7 +338,11 @@ def _run_report_task(task_id: str, match_result_ids: list[int], mode: str) -> No
             started_at=started,
         )
 
-    model = get_settings().llm_reasoning_model or get_settings().llm_model
+    model = (
+        get_settings().llm_report_model
+        or get_settings().llm_reasoning_model
+        or get_settings().llm_model
+    )
 
     def _deep_worker(p):
         key = _report_key(p, model, mode)
@@ -546,9 +570,49 @@ def get_report_task_items(task_id: str, db: Session = Depends(get_db)):
     ]
 
 
+@router.get("/tasks")
+def list_active_report_tasks(db: Session = Depends(get_db)):
+    rows = (
+        db.query(ReportTask)
+        .filter(ReportTask.status.in_(("queued", "running")))
+        .order_by(ReportTask.created_at.desc(), ReportTask.id.desc())
+        .all()
+    )
+    task_ids = [row.task_id for row in rows]
+    current_items: dict[str, str] = {}
+    if task_ids:
+        item_rows = (
+            db.query(AgentItemRun)
+            .filter(
+                AgentItemRun.task_id.in_(task_ids),
+                AgentItemRun.agent_name == "Report Agent",
+            )
+            .order_by(AgentItemRun.id.desc())
+            .all()
+        )
+        for item in item_rows:
+            if item.task_id not in current_items and item.item_label:
+                current_items[item.task_id] = item.item_label
+    return [
+        {
+            "task_id": row.task_id,
+            "mode": row.mode,
+            "status": row.status,
+            "total": row.total,
+            "done": row.done,
+            "failed": row.failed,
+            "current_item": current_items.get(row.task_id, ""),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        }
+        for row in rows
+    ]
+
+
 @router.get("", response_model=list[ReportOut])
 def list_reports(db: Session = Depends(get_db)):
-    return db.query(Report).order_by(Report.id.desc()).all()
+    rows = db.query(Report).order_by(Report.id.desc()).all()
+    return [_to_report_out(row) for row in rows]
 
 
 @router.get("/{report_id}", response_model=ReportOut)
@@ -556,7 +620,7 @@ def get_report(report_id: int, db: Session = Depends(get_db)):
     report = db.get(Report, report_id)
     if report is None:
         raise HTTPException(404, "报告不存在")
-    return report
+    return _to_report_out(report)
 
 
 @router.delete("/{report_id}")

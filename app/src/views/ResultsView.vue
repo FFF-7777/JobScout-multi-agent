@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api, type MatchResult } from "@/api";
@@ -214,6 +214,7 @@ const paginated = computed(() => {
   const start = (page.value - 1) * pageSize;
   return filtered.value.slice(start, start + pageSize);
 });
+const initialLoading = computed(() => loading.value && results.value.length === 0);
 
 // 深度报告后台任务轮询定时器
 let deepPollTimer: number | undefined;
@@ -453,7 +454,25 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
     </div>
 
     <div class="card">
+      <template v-if="initialLoading">
+        <div class="results-skeleton">
+          <div class="results-skeleton-row head">
+            <div class="results-skeleton-cell w-lg"></div>
+            <div class="results-skeleton-cell w-md"></div>
+            <div class="results-skeleton-cell w-sm"></div>
+            <div class="results-skeleton-cell w-sm"></div>
+          </div>
+          <div v-for="n in 6" :key="n" class="results-skeleton-row">
+            <div class="results-skeleton-cell w-lg"></div>
+            <div class="results-skeleton-cell w-md"></div>
+            <div class="results-skeleton-cell w-sm"></div>
+            <div class="results-skeleton-cell w-sm"></div>
+          </div>
+        </div>
+      </template>
+
       <el-table
+        v-else
         v-loading="loading"
         :data="paginated"
         style="width: 100%"
@@ -717,6 +736,42 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
   align-items: center;
   padding: 12px 0 4px;
 }
+
+.results-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.results-skeleton-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(160px, 1fr) 110px 110px;
+  gap: 12px;
+}
+
+.results-skeleton-cell {
+  position: relative;
+  overflow: hidden;
+  height: 64px;
+  border-radius: 16px;
+  background: linear-gradient(90deg, rgba(236, 241, 248, 0.96), rgba(247, 249, 252, 0.98), rgba(236, 241, 248, 0.96));
+}
+
+.results-skeleton-cell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+  animation: results-skeleton-shimmer 1.5s infinite;
+}
+
+@keyframes results-skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 .total-hint {
   color: #8a94a6;
   font-size: 13px;

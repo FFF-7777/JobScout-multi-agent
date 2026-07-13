@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import MatchResult, Resume
+from models import JobReport, MatchResult, Report, Resume
 from schemas.resume import (
     ProfileUpdateRequest,
     ResumeOut,
@@ -109,11 +109,21 @@ def update_profile(
 
 @router.delete("/{resume_id}")
 def delete_resume(resume_id: int, db: Session = Depends(get_db)):
-    """删除简历；级联清理依赖它的 match_results。agent_runs 作为历史保留。"""
+    """删除简历、匹配结果及对应报告；agent_runs 作为执行历史保留。"""
     resume = db.get(Resume, resume_id)
     if resume is None:
         raise HTTPException(404, "简历不存在")
-    db.query(MatchResult).filter(MatchResult.resume_id == resume_id).delete()
+    result_ids = [
+        r.id for r in db.query(MatchResult.id).filter(MatchResult.resume_id == resume_id)
+    ]
+    if result_ids:
+        db.query(JobReport).filter(JobReport.match_result_id.in_(result_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(MatchResult).filter(MatchResult.resume_id == resume_id).delete(
+        synchronize_session=False
+    )
+    db.query(Report).filter(Report.resume_id == resume_id).delete(synchronize_session=False)
     db.delete(resume)
     db.commit()
     return {"ok": True, "id": resume_id}

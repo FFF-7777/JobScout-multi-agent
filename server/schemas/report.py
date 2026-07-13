@@ -69,6 +69,7 @@ class ReportOut(BaseModel):
     id: int
     resume_id: int
     task_id: str | None = None
+    mode: str = "standard"
     title: str
     summary: str
     markdown_content: str

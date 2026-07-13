@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from config import get_settings
 from database import SessionLocal, init_db
-from models import AgentRun
+from models import AgentRun, ReportTask
 from routers import agents, jobs, match, reports, resumes
 from services import llm_service
 from services.job_parse_queue import start_parse_daemon, stop_parse_daemon
@@ -27,21 +28,35 @@ async def lifespan(app: FastAPI):
 
 
 def _recover_interrupted_runs() -> None:
-    """进程重启后，把残留的 running 状态标记中断，避免前端轮询永久卡死。"""
+    """进程重启后终结未完成任务，避免前端轮询永久卡死。"""
     db = SessionLocal()
     try:
-        n = (
+        now = datetime.now(UTC).replace(tzinfo=None)
+        agent_count = (
             db.query(AgentRun)
-            .filter(AgentRun.status == "running")
+            .filter(AgentRun.status.in_(("pending", "running")))
             .update(
                 {
                     AgentRun.status: "failed",
                     AgentRun.error_message: "服务重启，任务已中断",
-                    AgentRun.finished_at: None,
-                }
+                    AgentRun.progress: 100,
+                    AgentRun.finished_at: now,
+                },
+                synchronize_session=False,
             )
         )
-        if n:
+        report_count = (
+            db.query(ReportTask)
+            .filter(ReportTask.status.in_(("queued", "running")))
+            .update(
+                {
+                    ReportTask.status: "failed",
+                    ReportTask.finished_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        if agent_count or report_count:
             db.commit()
     finally:
         db.close()
@@ -110,8 +125,13 @@ def health():
         },
         {
             "name": "Match Agent",
-            "role": "reasoning",
-            "model": s.llm_reasoning_model or s.llm_model,
+            "role": "fast + reasoning" if s.match_two_tier else "reasoning",
+            "model": (
+                f"quick: {s.llm_fast_model or s.llm_model} / "
+                f"deep: {s.llm_reasoning_model or s.llm_model}"
+                if s.match_two_tier
+                else s.llm_reasoning_model or s.llm_model
+            ),
             "provider": s.llm_reasoning_provider,
             "enable_thinking": s.llm_reasoning_enable_thinking,
             "configured": bool(s.dashscope_api_key),
@@ -140,7 +160,11 @@ def test_llm():
     """调用一次模型自检，确认 API Key 与端点可用。"""
     try:
         reply = llm_service.ping()
-        return {"ok": True, "model": settings.llm_model, "reply": reply}
+        return {
+            "ok": True,
+            "model": settings.llm_fast_model or settings.llm_model,
+            "reply": reply,
+        }
     except llm_service.LLMConfigError as e:
         raise HTTPException(400, str(e)) from e
     except Exception as e:  # noqa: BLE001

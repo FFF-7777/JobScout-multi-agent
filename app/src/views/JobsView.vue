@@ -457,8 +457,11 @@ function startAnalyze() {
       </div>
 
       <div class="url-row">
-        <el-input v-model="jobUrl" placeholder="粘贴岗位链接，如 BOSS 直聘 / 拉勾 / 智联招聘 JD 页…" />
+        <el-input v-model="jobUrl" placeholder="仅支持智联招聘职位链接；BOSS / 拉勾 / 猎聘 / 51job 请改用粘贴 JD 或截图 OCR" />
         <el-button :loading="loading" @click="importUrl">通过链接导入</el-button>
+      </div>
+      <div class="url-help">
+        当前仅稳定支持智联招聘链接导入。BOSS直聘、拉勾、猎聘、51job 常受验证码、登录态或反爬限制影响，建议直接粘贴 JD 或使用截图 OCR 导入。
       </div>
     </div>
 
@@ -649,6 +652,12 @@ function startAnalyze() {
 .paste-hint {
   color: #3a6ff7;
   font-weight: 500;
+}
+.url-help {
+  margin-top: 10px;
+  color: #8a94a6;
+  font-size: 12px;
+  line-height: 1.7;
 }
 .jd-prev {
   color: #2c3340;

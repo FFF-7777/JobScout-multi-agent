@@ -74,7 +74,6 @@ class Settings(BaseSettings):
     # 仅匹配度最高的 N 个岗位再用「推理模型」做深度匹配。
     # 关闭（False）则全部岗位都用推理模型（旧行为）。
     match_two_tier: bool = True
-    match_quick_top_k: int = 5
 
     # 百度 OCR（图片导入 JD 文字识别）
     baidu_ocr_app_id: str = ""

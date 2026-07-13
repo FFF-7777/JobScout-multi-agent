@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -84,7 +84,7 @@ def get_result_by_job(job_id: int, db: Session = Depends(get_db)):
 
 class _RetryRequest(BaseModel):
     # 要重试的匹配结果 id；不传则重试该 task 下所有 failed 的结果
-    result_ids: list[int] = []
+    result_ids: list[int] = Field(default_factory=list)
 
 
 @router.delete("/results/{result_id}")
@@ -166,7 +166,7 @@ def retry_results(
     errors: list[dict] = []
     for (tid, jid), r in targets.items():
         rid = r.id
-        rtask_id = tid or ""
+        rtask_id = tid
         rresume_id = r.resume_id
         # 取简历画像（重试走 deep 档，需要 resume_id 拿原文）
         res = db.get(Resume, rresume_id)

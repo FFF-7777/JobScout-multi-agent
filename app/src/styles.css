@@ -1,9 +1,23 @@
 :root {
-  --is-primary: #3a6ff7;
-  --is-bg: #f5f7fb;
-  --is-card: #ffffff;
-  --is-text: #1f2733;
-  --is-muted: #8a94a6;
+  color-scheme: light;
+  --is-primary: #5f7cff;
+  --is-primary-strong: #4563f3;
+  --is-primary-soft: #eef3ff;
+  --is-accent: #8fd3ff;
+  --is-bg: #f4f7fb;
+  --is-bg-strong: #edf2f8;
+  --is-card: rgba(255, 255, 255, 0.72);
+  --is-card-strong: rgba(255, 255, 255, 0.88);
+  --is-line: rgba(167, 181, 210, 0.26);
+  --is-line-strong: rgba(148, 166, 199, 0.42);
+  --is-text: #152033;
+  --is-text-soft: #31415f;
+  --is-muted: #6c7892;
+  --is-shadow: 0 18px 55px rgba(112, 134, 173, 0.12);
+  --is-shadow-soft: 0 10px 30px rgba(119, 138, 173, 0.08);
+  --is-radius-xl: 28px;
+  --is-radius-lg: 20px;
+  --is-radius-md: 14px;
 }
 
 * {
@@ -14,74 +28,286 @@ html,
 body,
 #app {
   margin: 0;
-  height: 100%;
+  min-height: 100%;
+}
+
+html {
+  background:
+    radial-gradient(circle at top left, rgba(167, 214, 255, 0.7), transparent 28%),
+    radial-gradient(circle at 88% 10%, rgba(255, 255, 255, 0.96), transparent 18%),
+    radial-gradient(circle at 78% 24%, rgba(196, 222, 255, 0.55), transparent 26%),
+    linear-gradient(180deg, #f9fbff 0%, #f4f7fb 42%, #eff4fa 100%);
 }
 
 body {
-  background: var(--is-bg);
   color: var(--is-text);
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 15px;          /* 基础字号 14 → 15 */
-  line-height: 1.6;
+  font-family: "SF Pro Display", "PingFang SC", "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+  background: transparent;
+}
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: -1;
+  filter: blur(22px);
+}
+
+body::before {
+  top: 88px;
+  left: -72px;
+  width: 280px;
+  height: 280px;
+  border-radius: 999px;
+  background: rgba(188, 223, 255, 0.45);
+}
+
+body::after {
+  right: 4%;
+  bottom: 6%;
+  width: 340px;
+  height: 340px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+a {
+  color: inherit;
 }
 
 .page {
-  max-width: 1480px;            /* 1180 → 1480，加宽页面让表格列不被挤 */
+  max-width: 1480px;
   margin: 0 auto;
-  padding: 24px 20px 60px;
+  padding: 34px 22px 72px;
 }
 
 .page-title {
-  font-size: 26px;            /* 22 → 26 */
-  font-weight: 700;
-  margin: 4px 0 6px;
+  margin: 0 0 8px;
+  color: #122038;
+  font-size: 34px;
+  line-height: 1.08;
+  font-weight: 780;
+  letter-spacing: -0.03em;
 }
 
 .page-sub {
+  max-width: 920px;
   color: var(--is-muted);
-  margin-bottom: 20px;
-  font-size: 15px;            /* 14 → 15 */
+  margin-bottom: 22px;
+  font-size: 14px;
+  line-height: 1.8;
 }
 
 .card {
-  background: var(--is-card);
-  border-radius: 12px;
-  padding: 20px;
-  box-shadow: 0 2px 12px rgba(20, 40, 90, 0.05);
+  position: relative;
+  background: linear-gradient(180deg, var(--is-card-strong) 0%, var(--is-card) 100%);
+  border: 1px solid var(--is-line);
+  border-radius: var(--is-radius-lg);
+  padding: 22px;
+  box-shadow: var(--is-shadow);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
   margin-bottom: 18px;
+  overflow: hidden;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.55), transparent 36%, transparent 72%, rgba(190, 214, 255, 0.14));
+  pointer-events: none;
 }
 
 .grade-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
   font-weight: 700;
-  border-radius: 6px;
-  padding: 2px 10px;
+  border-radius: 999px;
+  padding: 4px 12px;
   color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
-.grade-S { background: #e64545; }
-.grade-A { background: #f7861b; }
-.grade-B { background: #3a6ff7; }
-.grade-C { background: #8a94a6; }
-.grade-D { background: #b8bfca; }
+
+.grade-S { background: linear-gradient(135deg, #ff7c6e, #ef4f59); }
+.grade-A { background: linear-gradient(135deg, #ffb866, #f38d36); }
+.grade-B { background: linear-gradient(135deg, #6e98ff, #4f6ff3); }
+.grade-C { background: linear-gradient(135deg, #8f9aba, #74819f); }
+.grade-D { background: linear-gradient(135deg, #b9c3d8, #98a5bf); }
 
 .section-h {
   font-weight: 700;
   margin: 16px 0 8px;
-  font-size: 16px;            /* 15 → 16 */
+  font-size: 16px;
+  color: #122038;
 }
 
-/* === 行内 checkbox 放大到 3 倍（全局 + !important 覆盖）=== */
-/* 关键：直接对 .el-table 下所有 .el-checkbox 应用（不依赖 .el-table__cell--selection） */
+.glass-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.65));
+  border: 1px solid rgba(173, 188, 218, 0.28);
+  box-shadow: var(--is-shadow-soft);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(174, 191, 223, 0.3);
+  color: var(--is-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.75fr);
+  gap: 18px;
+}
+
+.soft-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.soft-scroll::-webkit-scrollbar-thumb {
+  background: rgba(126, 145, 181, 0.35);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.soft-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.el-button {
+  --el-border-radius-base: 14px;
+  --el-border-radius-round: 999px;
+  --el-font-weight-primary: 600;
+  height: 42px;
+  padding: 0 18px;
+  box-shadow: none;
+}
+
+.el-button--primary {
+  --el-button-border-color: #5573f5;
+  --el-button-hover-bg-color: #5a78f6;
+  --el-button-hover-border-color: #5a78f6;
+  --el-button-active-bg-color: #4564ed;
+  --el-button-active-border-color: #4564ed;
+  background: linear-gradient(135deg, #6f8cff, #4e6ef5);
+  box-shadow: 0 10px 22px rgba(91, 113, 232, 0.22);
+}
+
+.el-button--default,
+.el-button.is-plain {
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(167, 181, 210, 0.36);
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: 16px !important;
+  background: rgba(255, 255, 255, 0.7) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 0 0 1px rgba(173, 188, 218, 0.26) !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px rgba(95, 124, 255, 0.35), 0 0 0 4px rgba(95, 124, 255, 0.08) !important;
+}
+
+.el-select-dropdown,
+.el-popper.is-light {
+  border-radius: 16px !important;
+  border-color: rgba(172, 187, 216, 0.3) !important;
+  background: rgba(255, 255, 255, 0.86) !important;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 18px 46px rgba(96, 116, 153, 0.16) !important;
+}
+
+.el-table {
+  --el-table-border-color: rgba(221, 228, 238, 0.72);
+  --el-table-header-bg-color: rgba(248, 250, 253, 0.82);
+  --el-table-tr-bg-color: transparent;
+  --el-table-row-hover-bg-color: rgba(240, 245, 255, 0.76);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.el-table th.el-table__cell {
+  color: #5f6d87;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.el-table td.el-table__cell {
+  color: var(--is-text-soft);
+}
+
+.el-tag {
+  border-radius: 999px;
+}
+
+.el-progress-bar__outer {
+  background: rgba(219, 227, 241, 0.76) !important;
+}
+
+.el-pagination.is-background .btn-next,
+.el-pagination.is-background .btn-prev,
+.el-pagination.is-background .el-pager li {
+  background: rgba(255, 255, 255, 0.74) !important;
+  border: 1px solid rgba(171, 186, 217, 0.26);
+}
+
+.el-empty {
+  padding: 18px 0;
+}
+
+@media (max-width: 900px) {
+  .page {
+    padding: 24px 14px 52px;
+  }
+
+  .page-title {
+    font-size: 28px;
+  }
+
+  .hero-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .el-table .el-checkbox {
   height: 32px !important;
   display: inline-flex !important;
   align-items: center !important;
   white-space: nowrap !important;
 }
+
 .el-table .el-checkbox__inner {
   width: 24px !important;
   height: 24px !important;
   border-width: 2px !important;
 }
+
 .el-table .el-checkbox__inner::after {
   border-width: 0 3px 3px 0 !important;
   left: 8px !important;
@@ -89,9 +315,11 @@ body {
   height: 12px !important;
   width: 6px !important;
 }
+
 .el-table .el-checkbox__label {
   display: none !important;
 }
+
 .el-table .cell {
   display: flex !important;
   align-items: center !important;

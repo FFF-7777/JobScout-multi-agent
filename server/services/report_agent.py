@@ -11,7 +11,7 @@ from schemas.report import JobReport
 from schemas.resume import ResumeProfile
 from services import llm_service, research_router, web_research_service
 
-REPORT_PROMPT_VERSION = "3"
+REPORT_PROMPT_VERSION = "4"
 
 
 def build_report_cache_key(

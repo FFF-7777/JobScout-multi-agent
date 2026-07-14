@@ -20,7 +20,7 @@ from schemas.match import (
 from schemas.resume import ResumeProfile
 from services import application_policy, llm_service, tech_matcher
 
-PROMPT_VERSION = "3"
+PROMPT_VERSION = "4"
 MATCH_POLICY_VERSION = "4"
 
 WEIGHTS = {
@@ -183,7 +183,10 @@ def build_hard_fail_result(
 
 _DEEP_REVIEW_SUFFIX = (
     "\n\n[深度复核模式] 这是深度分析阶段，请更严格核对每个判断。"
-    "优先删掉证据不足的乐观结论；若证据不充分，请明确写“当前简历未提供直接证据”。"
+    "逐条检查结论是否同时存在对应的岗位要求与简历证据，优先删掉只有关键词重合、没有项目或经历支持的乐观结论。"
+    "区分“不会”“未体现”“有相近经验”，不要把未体现直接判定为不会。"
+    "联网信息只能补充岗位与公司语境，不能作为候选人能力证据。"
+    "若证据不充分，请明确写“当前简历未提供直接证据”。"
 )
 
 

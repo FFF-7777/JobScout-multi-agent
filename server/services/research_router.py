@@ -43,6 +43,8 @@ def build_research_plan(
     queries: list[str] = []
     if company and title:
         queries.append(f"{company} {title} 技术栈 招聘")
+    if company:
+        queries.append(f"{company} 公司背景 主营业务 技术方向 招聘风险")
     if title and city:
         queries.append(f"{title} {city} 岗位要求")
     if required:

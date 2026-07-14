@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -175,6 +176,56 @@ def test_analysis_mode_owns_research_policy() -> None:
     assert quick.strategy == "off"
     assert forced.enabled is True
     assert forced.strategy == "force"
+
+
+def test_deep_research_plan_includes_company_background_query() -> None:
+    settings = SimpleNamespace(deep_research_max_items=6)
+    job = JobProfile(company_name="示例公司", job_title="Python 工程师", city="深圳")
+
+    with patch.object(research_router, "get_settings", return_value=settings):
+        plan = research_router.build_research_plan(
+            job, tier="deep", analyze_mode="full"
+        )
+
+    assert any(
+        "示例公司" in query and "公司背景" in query
+        for query in plan.queries
+    )
+
+
+def test_research_prompt_requests_sourced_company_context_without_guessing() -> None:
+    plan = ResearchPlan(
+        enabled=True,
+        strategy="force",
+        reason="required",
+        queries=["示例公司 公司背景 主营业务 技术方向"],
+    )
+    settings = SimpleNamespace(role_configured=lambda role: True)
+
+    with (
+        patch.object(web_research_service, "get_settings", return_value=settings),
+        patch.object(
+            web_research_service.llm_service,
+            "chat_json_with_search_metadata",
+            return_value=(
+                {"summary_items": ["示例公司从事企业软件服务。"], "source_notes": ["公司官网"]},
+                {"performed": True, "sources": [{"title": "官网", "url": "https://example.com"}], "provider": "dashscope", "verifiable": True},
+            ),
+        ) as search,
+    ):
+        web_research_service.fetch_research_context(
+            JobProfile(company_name="示例公司", job_title="Python 工程师"),
+            plan=plan,
+        )
+
+    system, user = search.call_args.args[:2]
+    payload = json.loads(user)
+    prompt_text = system + json.dumps(payload, ensure_ascii=False)
+    assert "公司背景" in prompt_text
+    assert "岗位关联" in prompt_text
+    assert "风险" in prompt_text
+    assert "来源" in prompt_text
+    assert "不得猜测" in prompt_text
 
 
 def test_fast_role_never_enables_thinking() -> None:

@@ -1,6 +1,13 @@
 import axios from "axios";
 
-const http = axios.create({ baseURL: "", timeout: 120000 });
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || ""
+).replace(/\/+$/, "");
+
+const http = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 120000,
+});
 
 export interface ProjectItem {
   name: string;
@@ -438,6 +445,9 @@ export const api = {
   getReport: (id: number) => http.get<ReportItem>(`/api/reports/${id}`).then((r) => r.data),
   deleteReport: (id: number) =>
     http.delete<{ ok: boolean; id: number }>(`/api/reports/${id}`).then((r) => r.data),
-  markdownUrl: (id: number) => `/api/reports/${id}/markdown`,
-  excelUrl: (id: number) => `/api/reports/${id}/excel`,
+  markdownUrl: (id: number) =>
+  `${API_BASE_URL}/api/reports/${id}/markdown`,
+
+excelUrl: (id: number) =>
+  `${API_BASE_URL}/api/reports/${id}/excel`,
 };

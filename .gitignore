@@ -29,3 +29,8 @@ dist/
 
 # Runtime output (logs, playwright artifacts)
 output/
+
+# 评估目录运行时产物（脚本正式代码仍入库）
+评估/eval_outputs/
+评估/*.log
+评估/__pycache__/

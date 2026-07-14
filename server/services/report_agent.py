@@ -6,10 +6,10 @@ import json
 
 import prompts
 from schemas.job import JobProfile
-from schemas.match import MatchResultModel
+from schemas.match import MatchResultModel, ResearchMetadata
 from schemas.report import JobReport
 from schemas.resume import ResumeProfile
-from services import llm_service
+from services import llm_service, research_router, web_research_service
 
 REPORT_PROMPT_VERSION = "3"
 
@@ -42,19 +42,53 @@ def run(
     resume_text: str | None = None,
     model_role: str = "report",
 ) -> JobReport:
+    research_plan = research_router.build_research_plan(
+        job,
+        tier="deep",
+        analyze_mode="full",
+    )
+    research = web_research_service.fetch_research_context(job, plan=research_plan)
     resume_block = json.dumps(resume.model_dump(), ensure_ascii=False)
     if resume_text:
         resume_block += "\n\n--- 简历原文（用于补充细节引用）---\n" + resume_text[:8000]
+    research_block = json.dumps(
+        {
+            "status": research.status,
+            "summary_items": research.summary_items,
+            "source_notes": research.source_notes,
+            "sources": research.sources,
+            "fallback_note": (
+                "联网调用失败，以下报告由模型基于简历、岗位和匹配结果继续生成。"
+                if research.status != "success"
+                else "联网研究成功，报告应优先使用可核验的外部语境。"
+            ),
+        },
+        ensure_ascii=False,
+    )
+    user_prompt = prompts.REPORT_USER.format(
+        resume_profile=resume_block,
+        job_profile=json.dumps(job.model_dump(), ensure_ascii=False),
+        match_result=json.dumps(match.model_dump(), ensure_ascii=False),
+    )
+    user_prompt += "\n\n--- 本次强制联网研究结果 ---\n" + research_block
     data = llm_service.chat_json(
         prompts.REPORT_SYSTEM,
-        prompts.REPORT_USER.format(
-            resume_profile=resume_block,
-            job_profile=json.dumps(job.model_dump(), ensure_ascii=False),
-            match_result=json.dumps(match.model_dump(), ensure_ascii=False),
-        ),
+        user_prompt,
         model_role=model_role,
     )
-    return JobReport.model_validate(data)
+    report = JobReport.model_validate(data)
+    report.research_metadata = ResearchMetadata(
+        status=research.status,
+        attempted=research.attempted,
+        queries=research.queries,
+        source_notes=research.source_notes,
+        sources=research.sources,
+        provider=research.provider,
+        verifiable=research.verifiable,
+        reason=research.reason,
+        error=research.error,
+    )
+    return report
 
 
 def _build_decision_basis(match: MatchResultModel) -> list[str]:

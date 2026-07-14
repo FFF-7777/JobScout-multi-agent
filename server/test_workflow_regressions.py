@@ -29,6 +29,7 @@ from schemas.match import ApplicationDecision, CareerAlignment, GapItem, HrScree
 from schemas.report import JobReport
 from schemas.resume import ResumeProfile
 from services import job_parse_queue, report_agent, tech_matcher, workflow
+from services import web_research_service
 from services import research_router
 from services import url_fetcher
 
@@ -99,8 +100,6 @@ class WorkflowRegressionTests(unittest.TestCase):
             research_router,
             "get_settings",
             return_value=SimpleNamespace(
-                deep_research_enabled=True,
-                deep_research_strategy="auto",
                 deep_research_max_items=6,
             ),
         ):
@@ -118,7 +117,95 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertFalse(plan_quick.enabled)
         self.assertEqual(plan_quick.strategy, "off")
         self.assertTrue(plan_deep.enabled)
+        self.assertEqual(plan_deep.strategy, "force")
         self.assertTrue(plan_deep.queries)
+
+    def test_deep_report_requires_live_research_before_generation(self):
+        research = SimpleNamespace(
+            status="success",
+            summary_items=["live market context"],
+            source_notes=["source note"],
+            sources=[{"title": "source", "url": "https://example.com"}],
+            provider="dashscope",
+            verifiable=True,
+            attempted=True,
+            queries=["query"],
+            reason="forced",
+            error="",
+            hash="research-hash",
+        )
+        report_payload = JobReport(conclusion="apply").model_dump()
+
+        with (
+            patch.object(report_agent.web_research_service, "fetch_research_context", return_value=research) as fetch,
+            patch.object(report_agent.llm_service, "chat_json", return_value=report_payload) as generate,
+        ):
+            report = report_agent.run(
+                ResumeProfile(name="candidate"),
+                JobProfile(company_name="company", job_title="role"),
+                MatchResultModel(score=80),
+            )
+
+        self.assertEqual(report.research_metadata.status, "success")
+        self.assertEqual(fetch.call_args.kwargs["plan"].strategy, "force")
+        self.assertIn("live market context", generate.call_args.args[1])
+
+    def test_deep_report_uses_model_fallback_when_live_research_degrades(self):
+        research = SimpleNamespace(
+            status="degraded",
+            summary_items=[],
+            source_notes=[],
+            sources=[],
+            provider="dashscope",
+            verifiable=False,
+            attempted=True,
+            queries=["query"],
+            reason="forced",
+            error="search unavailable",
+            hash="degraded-hash",
+        )
+        report_payload = JobReport(conclusion="model fallback result").model_dump()
+
+        with (
+            patch.object(report_agent.web_research_service, "fetch_research_context", return_value=research),
+            patch.object(report_agent.llm_service, "chat_json", return_value=report_payload) as generate,
+        ):
+            report = report_agent.run(
+                ResumeProfile(name="candidate"),
+                JobProfile(company_name="company", job_title="role"),
+                MatchResultModel(score=80),
+            )
+
+        self.assertEqual(report.conclusion, "model fallback result")
+        self.assertEqual(report.research_metadata.status, "degraded")
+        self.assertIn("search unavailable", report.research_metadata.error)
+        self.assertIn("联网调用失败", generate.call_args.args[1])
+
+    def test_forced_research_failure_degrades_to_model_only_context(self):
+        plan = research_router.ResearchPlan(
+            enabled=True,
+            strategy="force",
+            reason="required",
+            queries=["query"],
+        )
+        settings = SimpleNamespace(role_configured=lambda role: True)
+
+        with (
+            patch.object(web_research_service, "get_settings", return_value=settings),
+            patch.object(
+                web_research_service.llm_service,
+                "chat_json_with_search_metadata",
+                side_effect=RuntimeError("search unavailable"),
+            ),
+        ):
+            result = web_research_service.fetch_research_context(
+                JobProfile(job_title="role"),
+                plan=plan,
+            )
+
+        self.assertEqual(result.status, "degraded")
+        self.assertTrue(result.attempted)
+        self.assertIn("search unavailable", result.error)
 
     def test_summary_only_match_finishes_without_deep_phase(self):
         updates = []
@@ -183,6 +270,69 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertEqual(updates[-1]["progress"], 100)
         self.assertIs(updates[-1]["finish"], True)
 
+    def test_deep_match_progress_uses_two_minute_cost_weight(self):
+        updates = []
+
+        class Query:
+            def filter(self, *args, **kwargs):
+                return self
+
+            def all(self):
+                return []
+
+        class Session:
+            def query(self, *args, **kwargs):
+                return Query()
+
+            def close(self):
+                pass
+
+        settings = SimpleNamespace(
+            match_two_tier=True,
+            match_agent_concurrency=1,
+        )
+        outcome = SimpleNamespace(
+            match=MatchResultModel(score=80, level="A"),
+            cache_hit=False,
+            key="cache-key",
+            error="",
+        )
+
+        def bounded_map(items, worker, *, max_concurrency, on_result):
+            for item in items:
+                on_result(item, worker(item), None)
+
+        with (
+            patch.object(workflow, "get_settings", return_value=settings),
+            patch.object(workflow, "SessionLocal", Session),
+            patch.object(workflow, "_update_run", side_effect=lambda *args, **kwargs: updates.append(kwargs)),
+            patch.object(workflow, "_calc_eta", return_value=0),
+            patch.object(workflow, "_calc_eta_range", return_value=(0, 0)),
+            patch.object(workflow, "_is_aborted", return_value=False),
+            patch.object(workflow, "upsert_item_run"),
+            patch.object(workflow, "bounded_map", side_effect=bounded_map),
+            patch.object(workflow.match_core, "run_single_match", return_value=outcome),
+            patch.object(workflow.match_core, "persist_match_row", return_value=7),
+        ):
+            workflow.node_match_jobs(
+                {
+                    "task_id": "task-weight",
+                    "resume_id": 1,
+                    "resume_profile": {},
+                    "jobs_parsed": [
+                        {"job_id": 11, "analyze_mode": "summary", "profile": {"job_title": "基础岗位"}},
+                        {"job_id": 12, "analyze_mode": "full", "profile": {"job_title": "深度岗位"}},
+                    ],
+                    "errors": [],
+                }
+            )
+
+        running_updates = [
+            item for item in updates
+            if item.get("total_items") == 2 and item.get("progress") not in (0, 100)
+        ]
+        self.assertTrue(running_updates)
+        self.assertEqual(running_updates[0]["progress"], 25)
     def test_disabling_two_tier_uses_reasoning_for_every_job(self):
         tiers = []
         settings = SimpleNamespace(

@@ -1,8 +1,8 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { api, type AgentRun, type AgentRuntimeMeta, type Job } from "@/api";
+import { api, type AgentRun, type AgentRuntimeMeta, type Job, type WorkflowTask } from "@/api";
 import { useAppStore } from "@/stores/app";
 
 const router = useRouter();
@@ -26,18 +26,40 @@ let tickTimer: number | null = null;
 let notifiedDone = false;
 
 const taskStartedAt = ref<number | null>(null);
+const taskFinishedAt = ref<number | null>(null);
 const nowTick = ref(Date.now());
+const taskSessionStartKey = (taskId: string) => `jobscout-task-start:${taskId}`;
+const taskSessionFinishKey = (taskId: string) => `jobscout-task-finish:${taskId}`;
+
+function currentSessionTaskStart(taskId: string) {
+  const key = taskSessionStartKey(taskId);
+  const saved = Number(sessionStorage.getItem(key));
+  if (Number.isFinite(saved) && saved > 0) return saved;
+  const startedAt = Date.now();
+  sessionStorage.setItem(key, String(startedAt));
+  return startedAt;
+}
+
+function parseApiMillis(value?: string | null) {
+  if (!value) return null;
+  const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 const DEFAULT_RUNTIME_META: AgentRuntimeMeta = {
   job_agent_concurrency: 6,
   match_agent_concurrency: 4,
   report_agent_concurrency: 6,
   match_two_tier: true,
-  deep_research_enabled: false,
-  deep_research_strategy: "auto",
+  network_capabilities: {
+    quick_analysis: "disabled",
+    deep_analysis: "forced_with_model_fallback",
+    deep_report: "forced_with_model_fallback",
+  },
   assumptions: {
     quick_seconds_per_job: 40,
-    deep_seconds_per_job: 70,
+    deep_seconds_per_job: 120,
     report_overhead_seconds: 5,
   },
 };
@@ -80,10 +102,31 @@ function stepStatusKey(step: AgentRun) {
   return isCancelled(step) ? "cancelled" : step.status;
 }
 
-function parseBackendTime(iso?: string | null) {
-  if (!iso) return NaN;
-  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso)) return new Date(iso).getTime();
-  return new Date(`${iso}Z`).getTime();
+function syncTaskTiming(task: WorkflowTask) {
+  const startedValues = task.steps
+    .map((step) => parseApiMillis(step.started_at))
+    .filter((value): value is number => value !== null);
+  const startAt = startedValues.length ? Math.min(...startedValues) : currentSessionTaskStart(task.task_id);
+  taskStartedAt.value = startAt;
+  sessionStorage.setItem(taskSessionStartKey(task.task_id), String(startAt));
+
+  if (!isFinished(task.status)) {
+    taskFinishedAt.value = null;
+    sessionStorage.removeItem(taskSessionFinishKey(task.task_id));
+    return;
+  }
+
+  const finishedValues = task.steps
+    .map((step) => parseApiMillis(step.finished_at))
+    .filter((value): value is number => value !== null);
+  const saved = Number(sessionStorage.getItem(taskSessionFinishKey(task.task_id)));
+  const finishAt = finishedValues.length
+    ? Math.max(...finishedValues)
+    : Number.isFinite(saved) && saved > 0
+      ? saved
+      : Date.now();
+  taskFinishedAt.value = Math.max(finishAt, startAt);
+  sessionStorage.setItem(taskSessionFinishKey(task.task_id), String(taskFinishedAt.value));
 }
 
 function fmtDuration(seconds: number) {
@@ -147,7 +190,7 @@ const parsedJobCount = computed(
   () => selectedJobs.value.filter((job) => job.parse_status === "success").length
 );
 const researchedJobCount = computed(
-  () => (runtime.value.deep_research_enabled ? deepJobCount.value : 0)
+  () => deepJobCount.value
 );
 const quickRounds = computed(() => {
   const concurrency = Math.max(1, runtime.value.match_agent_concurrency || 1);
@@ -186,11 +229,12 @@ const estimatedTotalSeconds = computed(
 
 const elapsedSeconds = computed(() => {
   if (!taskStartedAt.value) return 0;
-  return Math.max(0, Math.round((nowTick.value - taskStartedAt.value) / 1000));
+  const endAt = isFinished(status.value) && taskFinishedAt.value ? taskFinishedAt.value : nowTick.value;
+  return Math.max(0, Math.round((endAt - taskStartedAt.value) / 1000));
 });
 
 const remainingSeconds = computed(() => {
-  if (!running.value || !estimatedTotalSeconds.value) return 0;
+  if (isFinished(status.value) || !running.value || !estimatedTotalSeconds.value) return 0;
   return Math.max(0, estimatedTotalSeconds.value - elapsedSeconds.value);
 });
 
@@ -268,25 +312,6 @@ const taskAlert = computed(() => {
   return null;
 });
 
-const estimatedBreakdown = computed(() => {
-  if (!selectedJobs.value.length) return "尚未选择岗位";
-  const parts: string[] = [];
-  if (basicJobCount.value > 0) {
-    parts.push(
-      `基础分析 ${basicJobCount.value} 个，按并发 ${runtime.value.match_agent_concurrency} 分成 ${quickRounds.value} 轮，约 ${fmtEstimate(quickRounds.value * runtime.value.assumptions.quick_seconds_per_job)}`
-    );
-  }
-  if (deepJobCount.value > 0) {
-    parts.push(
-      `深度分析 ${deepJobCount.value} 个，按并发 ${runtime.value.match_agent_concurrency} 分成 ${deepRounds.value} 轮，约 ${fmtEstimate(deepRounds.value * runtime.value.assumptions.deep_seconds_per_job)}`
-    );
-  }
-  if (!parts.length) {
-    parts.push(`共 ${selectedJobs.value.length} 个岗位，按并发 ${runtime.value.match_agent_concurrency} 估算`);
-  }
-  return parts.join("；");
-});
-
 const runHeadline = computed(() => {
   if (!selectedJobs.value.length) return "请先选择岗位";
   if (!status.value) return "前置资源已经就绪，开始后会直接进入匹配分析并持续写入结果。";
@@ -345,7 +370,7 @@ function conciseStepSummary(step: AgentRun | null, fallback: string) {
   }
   if (step.agent_name === "Match Agent") {
     if (step.status === "running") {
-      if (runtime.value.deep_research_enabled && deepJobCount.value > 0) {
+      if (deepJobCount.value > 0) {
         return step.current_item || `正在并发分析 ${selectedJobs.value.length} 个岗位，其中 ${deepJobCount.value} 个会补充深度研究`;
       }
       return step.current_item || `正在并发分析 ${selectedJobs.value.length} 个岗位`;
@@ -410,18 +435,22 @@ function fmtItemDuration(ms: number | null) {
   const seconds = Math.round(ms / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
+function researchPhaseLabel(phase?: string) {
+  return {
+    research_searching: "正在联网检索",
+    research_complete: "联网检索完成",
+    research_degraded: "联网降级",
+    research_skipped: "未触发",
+  }[phase || ""] || "匹配分析";
+}
 
 async function poll(taskId: string) {
   try {
     const task = await api.getTask(taskId);
     steps.value = task.steps;
     status.value = task.status;
-    const firstStarted = task.steps.find((step) => step.started_at)?.started_at;
-    if (firstStarted) {
-      taskStartedAt.value = parseBackendTime(firstStarted);
-    } else if (!taskStartedAt.value && task.status === "running") {
-      taskStartedAt.value = Date.now();
-    }
+    if (itemRunsOpen.value && !itemRunsLoading.value) void loadItemRuns();
+    syncTaskTiming(task);
     if (isFinished(task.status)) {
       running.value = false;
       if (!notifiedDone) {
@@ -460,12 +489,15 @@ async function start(auto = false) {
   running.value = true;
   status.value = "running";
   taskStartedAt.value = Date.now();
+  taskFinishedAt.value = null;
   notifiedDone = false;
   connError.value = false;
 
   try {
     const task = await api.runAgents(store.resumeId, activeJobIds.value);
     store.setTask(task.task_id);
+    sessionStorage.setItem(taskSessionStartKey(task.task_id), String(taskStartedAt.value));
+    sessionStorage.removeItem(taskSessionFinishKey(task.task_id));
     steps.value = task.steps;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = window.setInterval(() => poll(task.task_id), 1800);
@@ -508,11 +540,16 @@ function reset() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  if (store.taskId) {
+    sessionStorage.removeItem(taskSessionStartKey(store.taskId));
+    sessionStorage.removeItem(taskSessionFinishKey(store.taskId));
+  }
   store.setTask("");
   steps.value = [];
   status.value = "";
   running.value = false;
   taskStartedAt.value = null;
+  taskFinishedAt.value = null;
   itemRuns.value = [];
   itemRunsOpen.value = false;
   notifiedDone = false;
@@ -526,8 +563,12 @@ async function boot() {
     if (store.taskId) {
       await poll(store.taskId);
       if (route.query.autostart === "1" && isFinished(status.value)) {
-        store.setTask("");
-        steps.value = [];
+        if (store.taskId) {
+    sessionStorage.removeItem(taskSessionStartKey(store.taskId));
+    sessionStorage.removeItem(taskSessionFinishKey(store.taskId));
+  }
+  store.setTask("");
+  steps.value = [];
         status.value = "";
         await start(true);
       } else if (!isFinished(status.value)) {
@@ -576,11 +617,7 @@ onUnmounted(() => {
           </div>
           <div class="metric-card">
             <span>深度研究</span>
-            <b>{{ runtime.deep_research_enabled ? `${researchedJobCount} 个计划触发` : "未开启" }}</b>
-          </div>
-          <div class="metric-card">
-            <span>匹配并发</span>
-            <b>{{ runtime.match_agent_concurrency }}</b>
+            <b>{{ researchedJobCount ? `${researchedJobCount} 个联网` : "本次无深度岗位" }}</b>
           </div>
         </div>
       </div>
@@ -601,19 +638,15 @@ onUnmounted(() => {
             </div>
             <div class="status-box">
               <span>剩余时间</span>
-              <b>{{ running ? fmtEstimate(remainingSeconds) : "—" }}</b>
+              <b>{{ running ? fmtEstimate(remainingSeconds) : isFinished(status) ? "0秒" : "—" }}</b>
             </div>
             <div class="status-box">
-              <span>已耗时</span>
+              <span>{{ isFinished(status) ? "结束用时" : "已耗时" }}</span>
               <b>{{ running || isFinished(status) ? fmtDuration(elapsedSeconds) : "00:00" }}</b>
             </div>
             <div class="status-box">
-              <span>后端并发</span>
-              <b>{{ runtime.match_agent_concurrency }} 路匹配</b>
-            </div>
-            <div class="status-box">
-              <span>深度研究策略</span>
-              <b>{{ runtime.deep_research_enabled ? runtime.deep_research_strategy : "off" }}</b>
+              <span>联网能力</span>
+              <b>深度分析 / 深度报告已接入</b>
             </div>
           </div>
 
@@ -654,22 +687,18 @@ onUnmounted(() => {
       <div class="section-head">
         <div>
           <div class="section-title">执行进度</div>
-          <div class="section-sub">根据后端并发数、基础/深度岗位数量估算等待时间，给用户稳定、可解释的进度反馈。</div>
+          <div class="section-sub">展示本次会话的实时执行状态与预计剩余时间。</div>
         </div>
         <div class="progress-percent">{{ overallProgress }}%</div>
       </div>
       <div class="countdown-row">
-        <span>
-          基础分析约 {{ runtime.assumptions.quick_seconds_per_job }} 秒 / 岗位，深度分析约
-          {{ runtime.assumptions.deep_seconds_per_job }} 秒 / 岗位，并按后端并发分轮计算。
-        </span>
+        <span>{{ running ? "正在分析所选岗位，结果会持续写入。" : isFinished(status) ? "本次任务状态已同步。" : "开始后将在这里显示实时进度。" }}</span>
         <b v-if="running">预计剩余 {{ fmtEstimate(remainingSeconds) }}</b>
         <b v-else-if="isFinished(status)">本次分析已结束</b>
         <b v-else>等待开始</b>
       </div>
-      <div class="countdown-breakdown">{{ estimatedBreakdown }}</div>
-      <div v-if="runtime.deep_research_enabled && deepJobCount > 0" class="research-inline-note">
-        深度研究已开启：仅对 {{ deepJobCount }} 个深度岗位补充外部语境，快速分析岗位不会触发。
+      <div v-if="deepJobCount > 0" class="research-inline-note">
+        深度分析会联网；若联网失败，将由深度模型基于已有材料继续分析。基础分析使用本地材料、不开思考模式。
       </div>
       <div class="fake-progress">
         <div class="fake-progress-bar" :style="{ width: `${overallProgress}%` }"></div>
@@ -716,10 +745,9 @@ onUnmounted(() => {
         <div class="stage-stats">
           <span>总岗位 {{ selectedJobs.length }}</span>
           <span>基础 {{ basicJobCount }} / 深度 {{ deepJobCount }}</span>
-          <span>并发 {{ runtime.match_agent_concurrency }}</span>
-          <span v-if="runtime.deep_research_enabled && deepJobCount > 0">研究 {{ deepJobCount }} 个深度岗位</span>
+          <span v-if="deepJobCount > 0">深度联网已接入</span>
         </div>
-        <div class="stage-summary">{{ conciseStepSummary(matchStep, "点击开始后将并发执行岗位匹配。") }}</div>
+        <div class="stage-summary">{{ conciseStepSummary(matchStep, "点击开始后将执行所选岗位的匹配分析。") }}</div>
         <div v-if="matchStep" class="stage-detail-row">
           <span>已完成 <b>{{ matchStep.completed_items }}</b></span>
           <span v-if="matchStep.failed_items > 0" class="danger">失败 <b>{{ matchStep.failed_items }}</b></span>
@@ -744,6 +772,7 @@ onUnmounted(() => {
                 <th>岗位</th>
                 <th>模式</th>
                 <th>状态</th>
+                <th>当前阶段</th>
                 <th>耗时</th>
                 <th>错误</th>
               </tr>
@@ -753,6 +782,7 @@ onUnmounted(() => {
                 <td>{{ row.item_label || `岗位 ${row.item_id}` }}</td>
                 <td>{{ row.tier === "deep" ? "深度" : row.tier === "quick" ? "基础" : "—" }}</td>
                 <td>{{ row.status === "done" ? "完成" : row.status === "failed" ? "失败" : row.status === "running" ? "执行中" : "排队中" }}</td>
+                <td>{{ researchPhaseLabel(row.phase) }}</td>
                 <td>{{ fmtItemDuration(row.duration_ms) }}</td>
                 <td class="err">{{ row.error_message || "—" }}</td>
               </tr>
@@ -786,10 +816,6 @@ onUnmounted(() => {
           <span>推荐结果：完成后可立即查看匹配分与投递建议</span>
           <span>失败岗位：展开执行明细查看原因，回到结果页单项重试</span>
           <span>报告生成：基础 / 深度报告会分别保存到报告导出页</span>
-          <span>
-            估时规则：基础约 {{ runtime.assumptions.quick_seconds_per_job }} 秒 / 岗位，深度约
-            {{ runtime.assumptions.deep_seconds_per_job }} 秒 / 岗位，按并发分轮折算
-          </span>
         </div>
       </article>
     </section>

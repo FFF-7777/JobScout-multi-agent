@@ -23,11 +23,14 @@ def get_runtime_meta():
         "match_agent_concurrency": settings.match_agent_concurrency,
         "report_agent_concurrency": settings.report_agent_concurrency,
         "match_two_tier": settings.match_two_tier,
-        "deep_research_enabled": settings.deep_research_enabled,
-        "deep_research_strategy": settings.deep_research_strategy,
+        "network_capabilities": {
+            "quick_analysis": "disabled",
+            "deep_analysis": "forced_with_model_fallback",
+            "deep_report": "forced_with_model_fallback",
+        },
         "assumptions": {
             "quick_seconds_per_job": 40,
-            "deep_seconds_per_job": 70,
+            "deep_seconds_per_job": 120,
             "report_overhead_seconds": 5,
         },
     }
@@ -63,7 +66,12 @@ def run_agents(
             )
 
     task_id = workflow.create_task(req.resume_id, job_ids)
-    background.add_task(workflow.run_workflow, task_id, req.resume_id, job_ids)
+    background.add_task(
+        workflow.run_workflow,
+        task_id,
+        req.resume_id,
+        job_ids,
+    )
 
     steps = (
         db.query(AgentRun)

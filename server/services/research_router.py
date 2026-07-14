@@ -31,16 +31,7 @@ def build_research_plan(
             strategy="off",
             reason="快速分析不走外部研究链路。",
         )
-    if not settings.deep_research_enabled:
-        return ResearchPlan(
-            enabled=False,
-            strategy="off",
-            reason="未开启深度研究配置。",
-        )
-
-    strategy = (settings.deep_research_strategy or "auto").lower()
-    if strategy == "off":
-        return ResearchPlan(enabled=False, strategy="off", reason="配置为关闭。")
+    strategy = "force"
 
     required = [skill for skill in (job.required_skills or []) if _clean(skill)]
     preferred = [skill for skill in (job.preferred_skills or []) if _clean(skill)]
@@ -59,10 +50,10 @@ def build_research_plan(
     elif preferred:
         queries.append(f"{title or '该岗位'} {' '.join(preferred[:4])} 加分技能")
 
-    should_enable = strategy == "force" or analyze_mode == "full"
+    should_enable = analyze_mode == "full" or tier == "deep"
     return ResearchPlan(
         enabled=should_enable and bool(queries),
         strategy=strategy,
-        reason="深度分析可补充外部技术趋势与岗位语境。" if should_enable and queries else "当前条件不足，不触发研究。",
+        reason="深度分析固定强制联网；联网失败时由深度模型基于已有材料继续分析。" if should_enable and queries else "岗位信息不足以生成联网查询，改由深度模型基于已有材料分析。",
         queries=queries[: max(1, settings.deep_research_max_items)],
     )

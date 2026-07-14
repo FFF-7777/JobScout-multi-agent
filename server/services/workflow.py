@@ -1,7 +1,4 @@
-﻿"""LangGraph 宸ヤ綔娴侊細涓茶仈 4 涓?Agent锛屽苟鎶婃瘡涓€姝ユ墽琛岀姸鎬佽惤搴撱€?
-鑺傜偣椤哄簭锛歱arse_resume -> parse_jobs -> match_jobs -> generate_report
-姣忎釜鑺傜偣鎵ц鍓嶅悗鍐?agent_runs 琛紝渚涘墠绔疆璇㈠仛杩囩▼鍙鍖栥€?
-鑰楁椂浼樺寲锛歱arse_jobs / match_jobs / generate_report 涓変釜鑺傜偣鍐呴儴瀵?N 涓矖浣?鍋?LLM 璋冪敤骞跺彂锛寃orker 鍐呭彧璺?chat_json锛屼富绾跨▼鎸夊畬鎴愰『搴忚惤搴?+ 鎺ㄨ繘 progress銆?"""
+"""LangGraph 工作流：串联四个智能体并持久化执行状态。"""
 from __future__ import annotations
 
 import threading
@@ -33,7 +30,7 @@ AGENT_STEPS = [
 
 
 def _utcnow() -> datetime:
-    """tz 瀹夊叏鐨?naive UTC 鏃堕棿锛堥伩鍏?datetime.utcnow() 鐨?DeprecationWarning锛夈€?"""
+    """返回与数据库字段兼容的无时区 UTC 时间。"""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -143,7 +140,7 @@ def _update_run(
 
 
 def _calc_eta(task_id: str, agent_name: str, total: int, done: int) -> int:
-    """ETA = (宸茬敤 / 宸插畬鎴? * 鍓╀綑銆俤one=0 鏃惰繑鍥?0銆?"""
+    """根据当前平均耗时估算剩余秒数。"""
     if total <= 0 or done <= 0:
         return 0
     db = SessionLocal()
@@ -164,8 +161,7 @@ def _calc_eta(task_id: str, agent_name: str, total: int, done: int) -> int:
 
 
 def _calc_eta_range(durations: list[float], total: int, done: int, concurrency: int) -> tuple[int, int]:
-    """鍩轰簬宸插畬鎴愬崟宀椾綅鑰楁椂鏍锋湰锛岀粰鍑哄墿浣欐椂闂寸殑 P50~P90 鑼冨洿锛堢锛夈€?
-    鍓嶅嚑涓牱鏈笉瓒虫椂杩斿洖 (0, 0)锛屽墠绔嵁姝ゆ樉绀恒€屼及绠椾腑鈥︺€嶃€?    鍗曞矖浣嶈€楁椂娉㈠姩澶э紙杈撳叆闀垮害 / 闄愭祦閲嶈瘯 / 缃戠粶锛夛紝鏁呭睍绀哄尯闂磋€岄潪绮剧‘绉掓暟銆?    """
+    """按已完成样本和并发波次返回 P50 到 P90 的剩余时间区间。"""
     remaining = max(0, total - done)
     if remaining == 0:
         return 0, 0
@@ -183,11 +179,11 @@ def _calc_eta_range(durations: list[float], total: int, done: int, concurrency: 
     return low, high
 
 
-# --------- 鍚勮妭鐐?---------
+# --------- 工作流节点 ---------
 
 
 def _is_aborted(task_id: str, agent_name: str) -> bool:
-    """鐢ㄦ埛璋冧簡 abort_task锛氬綋鍓嶈妭鐐逛細琚爣璁颁负 failed銆俹n_result / 鑺傜偣鍏ュ彛妫€鏌ヤ竴娆″嵆鍙€?"""
+    """检查用户是否已经中止当前智能体节点。"""
     db = SessionLocal()
     try:
         run = (
@@ -195,13 +191,13 @@ def _is_aborted(task_id: str, agent_name: str) -> bool:
             .filter(AgentRun.task_id == task_id, AgentRun.agent_name == agent_name)
             .first()
         )
-        return bool(run and run.status == "failed" and run.error_message == "鐢ㄦ埛涓")
+        return bool(run and run.status == "failed" and run.error_message == "用户中止")
     finally:
         db.close()
 
 
 class _AbortedByUser(AbortFlow):
-    """鐢ㄦ埛鍦?workflow 璺戞湡闂寸偣浜嗐€屼腑鏂€嶃€傜户鎵?AbortFlow 璁?bounded_map 鍙栨秷鍓╀綑 future銆?"""
+    """用户中止工作流；由 bounded_map 取消剩余任务。"""
 
 
 def _check_aborted_or_raise(task_id: str, agent_name: str) -> None:
@@ -219,7 +215,7 @@ def node_parse_resume(state: JobScoutState) -> JobScoutState:
             raise ValueError(f"简历 {state['resume_id']} 不存在")
         state["resume_text"] = resume.raw_text
         _update_run(task_id, "Resume Agent", progress=50, current_item="Resume Agent 正在解析画像…")
-        # 宸叉湁鐢诲儚鍒欏鐢紝鍚﹀垯璋冪敤 Agent锛坒ast 妗ｏ級
+        # 已有画像则复用，否则调用快速档模型解析。
         if resume.profile_json:
             profile = ResumeProfile.model_validate(resume.profile_json)
         else:
@@ -250,7 +246,7 @@ def node_parse_resume(state: JobScoutState) -> JobScoutState:
 
 
 def node_abort(state: JobScoutState) -> JobScoutState:
-    """绠€鍘嗚В鏋愬け璐ユ椂鏀跺熬锛氭妸鏈墽琛岀殑涓嬫父鑺傜偣鏍囪涓哄け璐ワ紝閬垮厤浠诲姟鍗″湪 running銆?"""
+    """简历解析失败时结束未执行节点，避免任务永久停在运行中。"""
     task_id = state["task_id"]
     reason = " | ".join(state.get("errors", [])[:3]) or "简历解析失败"
     for name in ("Job Agent", "Match Agent", "Report Agent"):
@@ -266,9 +262,7 @@ def node_abort(state: JobScoutState) -> JobScoutState:
 
 
 def _parse_single_job(work_item: dict) -> JobProfile:
-    """worker 鍑芥暟锛氱函 LLM 璋冪敤锛屼笉纰?DB銆?    
-    work_item 鐢?_preload_job_work_items() 鍦ㄤ富绾跨▼棰勫姞杞斤紝
-    鍖呭惈 hints / jd_text / source / cached_profile锛堣嫢宸叉湁鍒嗘瀽缂撳瓨锛夈€?    """
+    """解析单个预加载岗位；worker 不访问数据库。"""
     if work_item.get("cached_profile"):
         return work_item["cached_profile"]
     return job_agent.run(
@@ -280,13 +274,7 @@ def _parse_single_job(work_item: dict) -> JobProfile:
 
 
 def _preload_job_work_items(job_ids: list[int]) -> list[dict]:
-    """涓荤嚎绋嬩竴娆℃€ф煡璇㈡墍鏈夊矖浣嶇殑 DB 鏁版嵁锛屾墦鍖呮垚 worker 鍙洿鎺ヤ娇鐢ㄧ殑 work_item銆?    
-    姣忎釜 work_item 鍖呭惈锛?    - jid: 宀椾綅 ID
-    - hints: {company_name, job_title, city, salary}
-    - jd_text: 鍘熷 JD 鏂囨湰
-    - source: 鏉ユ簮锛坢anual / boss / ocr 绛夛級
-    - cached_profile: JobProfile 瀹炰緥锛堣嫢宸叉湁鍒嗘瀽缂撳瓨锛夛紝None 琛ㄧず闇€瑕?LLM
-    """
+    """一次性预加载岗位数据，避免并发 worker 共享数据库会话。"""
     if not job_ids:
         return []
     db = SessionLocal()
@@ -359,7 +347,7 @@ def node_parse_jobs(state: JobScoutState) -> JobScoutState:
                 current_item=label + " - 失败",
             )
             return
-        # 涓荤嚎绋?commit锛氬洖濉?jobs 琛ㄧ┖瀛楁 + 钀?job_analysis
+        # 主线程负责回填岗位字段并持久化结构化分析。
         db = SessionLocal()
         try:
             job = db.get(Job, jid)
@@ -472,19 +460,19 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     resume_id = state["resume_id"]
     two_tier = bool(settings.match_two_tier)
     quick_seconds = 40
-    deep_seconds = 70
+    deep_seconds = 120
 
     # 并发可视化 / 计时需要的线程安全容器。
     lock = threading.Lock()
     start_times: dict[int, float] = {}
     in_flight: set[int] = set()
     cached_jids: set[int] = set()
-    # P0#2锛歲uick / deep 涓ら樁娈靛垎鍒鏁颁笌璁℃椂锛岄伩鍏?deep 闃舵杩涘害婧㈠嚭 100%
+    # quick 与 deep 分档计数，避免深度阶段进度溢出。
     phase_done = {"quick": 0, "deep": 0}
     phase_failed = {"quick": 0, "deep": 0}
     phase_durations = {"quick": [], "deep": []}
     title_map = {it["job_id"]: (it["profile"] or {}).get("job_title", "") for it in jobs}
-    # jid -> (MatchResultModel, result_row_id)锛氭渶缁堬紙鍙兘缁?deep 瑕嗙洊锛夌殑鍖归厤缁撴灉
+    # 保存每个岗位最终采用的匹配结果；深度结果可覆盖快速结果。
     final_map: dict[int, dict] = {}
     job_mode_map: dict[int, str] = {
         it["job_id"]: it["analyze_mode"] or "summary"
@@ -511,7 +499,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
 
     total_cost_units = len(quick_targets) * quick_seconds + len(deep_targets) * deep_seconds
 
-    # 棰勫缓 queued 鐘舵€佺殑鍗曟潯鎵ц璁板綍锛屼緵鍓嶇瀹炴椂鐪嬪埌鎺掗槦
+    # 预建 queued 记录，让前端能够实时展示排队状态。
     for it in jobs:
         upsert_item_run(
             task_id, "Match Agent", it["job_id"], title_map.get(it["job_id"], ""),
@@ -520,9 +508,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         )
 
     def _emit_progress(tier: str, phase_total: int, label: str) -> None:
-        """鎸夐樁娈靛垎鍒绠楄繘搴︿笌 ETA锛圥0#2 淇娣卞害闃舵婧㈠嚭 100%锛夈€?
-        - quick 闃舵锛氳繘搴?= done/phase_total * 70锛沜ompleted_items = 鏈樁娈靛凡瀹屾垚鏁?        - deep 闃舵锛氳繘搴?= 70 + done/phase_total * 30锛沜ompleted_items = total
-          锛堝叏閲?quick 缁撴灉宸茬粡鍙煡鐪嬶紝涓嶅簲鎶?deep 璋冪敤娆℃暟鍐嶆绱姞鍒板矖浣嶆暟锛?           鍚﹀垯 deep 绗竴涓换鍔″氨浼氬嚭鐜?70 + 34/5*30 = 274%锛?        """
+        """按实际完成成本计算进度，并根据耗时样本估算 ETA。"""
         done = phase_done[tier]
         completed_units = phase_done["quick"] * quick_seconds + phase_done["deep"] * deep_seconds
         progress = round(completed_units / max(1, total_cost_units) * 100) if total_cost_units else 100
@@ -550,7 +536,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             failed_items=failed,
             in_flight_items=flight,
         )
-        # 鎶婂湪閫?item 鏍囪涓?running锛堝崟鏉℃墽琛岃褰曪級
+        # 将当前并发任务标记为 running。
         for j in in_flight:
             upsert_item_run(
                 task_id, "Match Agent", j, title_map.get(j, ""), tier=tier, status="running"
@@ -566,7 +552,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
         )
 
     def _run_phase(tier: str, targets: list[dict]) -> None:
-        """瀵?targets 璺戜竴妗ｅ尮閰嶏紱tier=quick 鍏ㄩ噺棰勬帓锛宼ier=deep 浠?Top-K / 鐢ㄦ埛鎸囧畾 full銆?"""
+        """执行一档匹配：quick 处理基础岗位，deep 处理深度岗位。"""
         if not targets:
             return
         phase_total = len(targets)
@@ -576,7 +562,25 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             with lock:
                 start_times[jid] = time.monotonic()
                 in_flight.add(jid)
-            return match_core.run_single_match(resume.model_dump(), resume_id, jid, tier=tier)
+            def _research_event(phase: str, metadata: dict) -> None:
+                upsert_item_run(
+                    task_id,
+                    "Match Agent",
+                    jid,
+                    title_map.get(jid, ""),
+                    tier=tier,
+                    status="running",
+                    phase=phase,
+                    metadata=metadata,
+                )
+
+            return match_core.run_single_match(
+                resume.model_dump(),
+                resume_id,
+                jid,
+                tier=tier,
+                research_callback=_research_event,
+            )
 
         def _on_result(item, oc, _err):
             jid = item["job_id"]
@@ -593,8 +597,8 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             if oc is None or oc.match is None:
                 with lock:
                     phase_failed[tier] += 1
-                # worker 鎶涘紓甯告椂 oc 涓?None锛坆ounded_map 浠呬紶 error锛夛紱鍚﹀垯鍙?oc.error
-                error = (oc.error if oc else None) or (_err or "鏈煡閿欒")
+                # bounded_map 可能只返回异常；统一整理为可持久化错误。
+                error = (oc.error if oc else None) or (_err or "未知错误")
                 error = str(error)
                 try:
                     fallback_status = "partial" if tier == "deep" and two_tier else "failed"
@@ -603,7 +607,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
                         (oc.key if oc else ""),
                         cache_hit,
                         match_mode=tier,
-                        # 鍙湁鈥滃厛 quick 鍚?deep鈥濈殑宀椾綅锛宒eep 澶辫触鎵嶇畻 partial锛涘惁鍒欏氨鏄?failed
+                        # 仅已有快速结果的深度任务失败时标记为 partial。
                         status=fallback_status,
                         error=error,
                     )
@@ -612,7 +616,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
                 _finish_item_run(jid, tier, st, now, "failed", error=error)
                 with lock:
                     phase_done[tier] += 1
-                _emit_progress(tier, phase_total, label + " 鈥?澶辫触")
+                _emit_progress(tier, phase_total, label + " - 失败")
                 return
             # 直接使用 persist_match_row 的返回值（行 id），不再临时开 Session 查询。
             # 这样能避免批量运行时累计未关闭的数据库连接。
@@ -650,7 +654,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
     if deep_targets:
         _run_phase("deep", deep_targets)
 
-    # 姹囨€绘渶缁堝尮閰嶇粨鏋滐紙鎸夋渶缁堝垎鏁伴檷搴忥級锛屼緵涓嬫父鎶ュ憡鑺傜偣浣跨敤
+    # 汇总每个岗位的最终匹配结果并按分数降序排列。
     results = sorted(final_map.values(), key=lambda x: x["match"]["score"], reverse=True)
     state["match_results"] = results
     top = results[0]["match"]["score"] if results else 0
@@ -661,7 +665,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
             "Match Agent",
             status="failed",
             progress=100,
-            summary="鎵€鏈夊矖浣嶅尮閰嶅潎澶辫触",
+            summary="所有岗位匹配均失败",
             eta_seconds=0,
             eta_low=0,
             eta_high=0,
@@ -697,11 +701,7 @@ def node_match_jobs(state: JobScoutState) -> JobScoutState:
 
 
 def node_generate_report(state: JobScoutState) -> JobScoutState:
-    """鑷姩鎶ュ憡鐢熸垚锛堜笉闃诲鐢ㄦ埛鐪嬪尮閰嶇粨鏋滐級銆?
-    绛栫暐鐢?REPORT_AUTO_POLICY 鎺у埗锛?    - none锛氫笉鑷姩鐢熸垚锛屽叏閮ㄦ寜闇€锛堢敤鎴峰彲鍦ㄧ粨鏋滈〉鐐广€岀敓鎴愭姤鍛娿€嶏級
-    - all 锛氫负鎵€鏈夊矖浣嶇敓鎴?    - top_k锛堥粯璁わ級锛氫粎瀵瑰尮閰嶅害鏈€楂樼殑 N 涓矖浣嶇敓鎴?
-    鑷姩鐢熸垚鐨勬姤鍛婇粯璁ゆ槸銆屽熀纭€鎶ュ憡銆嶏紙绾唬鐮佹ā鏉匡紝绔嬪嵆鐢熸垚锛岄浂 LLM 璋冪敤锛夛紱
-    娣卞害 AI 鎶ュ憡锛堝惈闈㈣瘯棰?/ BOSS 璇濇湳绛夛級閫氳繃 POST /api/reports/generate-batch 鎸夐渶瑙﹀彂銆?    """
+    """按配置生成基础报告；深度报告由结果页按需触发。"""
     task_id = state["task_id"]
     _update_run(
         task_id,
@@ -756,7 +756,7 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
         jid = mr["job_id"]
         job = JobProfile.model_validate(_parsed_map_safe(parsed_map, jid))
         match = MatchResultModel.model_validate(mr["match"])
-        # 鍩虹鎶ュ憡锛氱函浠ｇ爜妯℃澘锛岀珛鍗崇敓鎴愶紝涓嶈皟鐢?LLM
+        # 基础报告使用确定性模板，不调用 LLM。
         report = report_agent.build_standard_job_report(job, match)
         db = SessionLocal()
         try:
@@ -774,24 +774,24 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
             task_id,
             "Report Agent",
             progress=int(done / n * 100) if n else 100,
-            summary=f"宸茬敓鎴愬熀纭€鎶ュ憡 {done}/{n}",
-            current_item=f"鎶ュ憡 {done}/{n}",
+            summary=f"已生成基础报告 {done}/{n}",
+            current_item=f"报告 {done}/{n}",
         )
 
-    # 姹囨€?Markdown锛堝熀纭€鎶ュ憡锛夎惤搴擄紝渚涖€屾姤鍛婂鍑恒€嶉〉鏌ョ湅 / Excel 瀵煎嚭
+    # 汇总并持久化基础版 Markdown 报告。
     markdown = report_agent.build_standard_markdown(resume, items)
     db = SessionLocal()
     try:
         report_row = Report(
             resume_id=state["resume_id"],
             task_id=task_id,
-            title=f"宀椾綅鍒嗘瀽鎶ュ憡锛圱op {len(items)} 鍩虹鐗堬級 - {resume.name or '鍊欓€変汉'}",
+            title=f"岗位分析报告（Top {len(items)} 基础版） - {resume.name or '候选人'}",
             summary=f"共 {len(items)} 个岗位（基础报告，未调用 LLM）",
             markdown_content=markdown,
         )
         db.add(report_row)
         db.commit()
-        # 淇濈暀鏈€杩?100 浠藉巻鍙叉姤鍛婏紝瓒呭嚭鏈€鏃х殑鑷姩鍒犻櫎
+        # 仅保留最近的历史报告。
         try:
             from routers.reports import _prune_history_reports
             _prune_history_reports()
@@ -816,12 +816,12 @@ def node_generate_report(state: JobScoutState) -> JobScoutState:
 
 
 def _parsed_map_safe(parsed_map: dict, jid) -> dict:
-    """鍙栧矖浣嶇敾鍍忥紝缂哄け鏃剁粰绌?dict锛岄伩鍏嶅崟宀椾綅鏃犵敾鍍忓鑷存暣娈靛け璐ャ€?"""
+    """安全读取岗位画像；缺失时返回空字典。"""
     return parsed_map.get(jid, {}) or {}
 
 
 def route_after_parse_resume(state: JobScoutState) -> str:
-    """绠€鍘嗙敾鍍忔湭鐢熸垚鍒欎腑姝紝鍚﹀垯杩涘叆宀椾綅瑙ｆ瀽銆?"""
+    """简历画像存在时继续解析岗位，否则中止。"""
     return "parse_jobs" if state.get("resume_profile") else "abort"
 
 
@@ -851,11 +851,28 @@ _GRAPH = _build_graph()
 def create_task(resume_id: int, job_ids: list[int]) -> str:
     task_id = uuid.uuid4().hex[:12]
     _init_runs(task_id)
+    db = SessionLocal()
+    try:
+        match_run = (
+            db.query(AgentRun)
+            .filter(AgentRun.task_id == task_id, AgentRun.agent_name == "Match Agent")
+            .first()
+        )
+        if match_run is not None:
+            match_run.input_json = {
+                "network_policy": {
+                    "quick": "disabled",
+                    "deep": "forced_with_model_fallback",
+                }
+            }
+            db.commit()
+    finally:
+        db.close()
     return task_id
 
 
 def _fail_unfinished_runs(task_id: str, error: str) -> None:
-    """宸ヤ綔娴佸彂鐢熸湭棰勬湡寮傚父鏃剁粨鏉熸湭瀹屾垚鑺傜偣锛岄伩鍏嶄换鍔℃案涔呮樉绀轰负杩愯涓€?"""
+    """异常时结束未完成节点，避免任务永久显示运行中。"""
     db = SessionLocal()
     try:
         runs = (
@@ -870,7 +887,7 @@ def _fail_unfinished_runs(task_id: str, error: str) -> None:
         for run in runs:
             run.status = "failed"
             run.progress = 100
-            run.error_message = f"宸ヤ綔娴佸紓甯革細{error}"
+            run.error_message = f"工作流异常：{error}"
             if run.started_at is None:
                 run.started_at = now
             run.finished_at = now
@@ -879,8 +896,12 @@ def _fail_unfinished_runs(task_id: str, error: str) -> None:
         db.close()
 
 
-def run_workflow(task_id: str, resume_id: int, job_ids: list[int]) -> None:
-    """鍚屾鎵ц鏁翠釜宸ヤ綔娴侊紙渚涘悗鍙扮嚎绋嬭皟鐢級銆?"""
+def run_workflow(
+    task_id: str,
+    resume_id: int,
+    job_ids: list[int],
+) -> None:
+    """同步执行完整工作流，供后台线程调用。"""
     state: JobScoutState = {
         "task_id": task_id,
         "resume_id": resume_id,
@@ -890,7 +911,8 @@ def run_workflow(task_id: str, resume_id: int, job_ids: list[int]) -> None:
     try:
         _GRAPH.invoke(state)
     except _AbortedByUser:
-        # 鐢ㄦ埛涓锛氭妸"杩樻病璺戝埌"鐨勪笅娓歌妭鐐圭粺涓€鏍囪涓?failed/宸蹭腑姝?        for name in ("Resume Agent", "Job Agent", "Match Agent", "Report Agent"):
+        # 用户中止后，统一结束尚未执行的节点。
+        for name in ("Resume Agent", "Job Agent", "Match Agent", "Report Agent"):
             _update_run(
                 task_id,
                 name,

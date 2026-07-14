@@ -22,6 +22,7 @@ export interface Resume {
   filename: string;
   raw_text: string;
   profile_json: ResumeProfile | null;
+  ocr_metadata?: any;
 }
 export interface ResumeImageImportFailed {
   filename: string;
@@ -68,6 +69,7 @@ export interface Job {
   parse_status: string;
   parse_error: string;
   analysis: JobProfile | null;
+  ocr_metadata?: any;
 }
 export interface AgentRun {
   id: number;
@@ -78,6 +80,7 @@ export interface AgentRun {
   summary: string;
   progress: number;
   output_json: any;
+  input_json?: any;
   error_message: string;
   eta_seconds: number;
   eta_low: number;
@@ -100,13 +103,17 @@ export interface AgentRuntimeMeta {
   match_agent_concurrency: number;
   report_agent_concurrency: number;
   match_two_tier: boolean;
-  deep_research_enabled: boolean;
-  deep_research_strategy: string;
+  network_capabilities: NetworkCapabilities;
   assumptions: {
     quick_seconds_per_job: number;
     deep_seconds_per_job: number;
     report_overhead_seconds: number;
   };
+}
+export interface NetworkCapabilities {
+  quick_analysis: "disabled";
+  deep_analysis: "forced_with_model_fallback";
+  deep_report: "forced_with_model_fallback";
 }
 export interface SkillEvidenceItem {
   skill: string;
@@ -234,6 +241,7 @@ export interface AgentHealth {
   model: string;
   provider: string;
   enable_thinking: boolean;
+  network_access: "disabled" | "deep_forced_with_model_fallback" | "forced_with_model_fallback";
   configured: boolean;
 }
 export interface HealthInfo {
@@ -243,6 +251,7 @@ export interface HealthInfo {
   llm_base_url?: string;
   llm_timeout?: number;
   agents: AgentHealth[];
+  network_capabilities: NetworkCapabilities;
 }
 export interface LLMTestItem {
   name: string;
@@ -336,7 +345,9 @@ export const api = {
       .then((r) => r.data),
 
   runAgents: (resume_id: number, job_ids: number[]) =>
-    http.post<WorkflowTask>("/api/agents/run", { resume_id, job_ids }).then((r) => r.data),
+    http
+      .post<WorkflowTask>("/api/agents/run", { resume_id, job_ids })
+      .then((r) => r.data),
   getAgentRuntimeMeta: () =>
     http.get<AgentRuntimeMeta>("/api/agents/runtime-meta").then((r) => r.data),
   getTask: (task_id: string) =>

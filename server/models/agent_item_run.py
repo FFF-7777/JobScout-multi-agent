@@ -35,6 +35,8 @@ class AgentItemRun(Base):
     # queued / running / done / failed
     status: Mapped[str] = mapped_column(String(16), default="queued")
     error_message: Mapped[str] = mapped_column(Text, default="")
+    phase: Mapped[str] = mapped_column(String(32), default="")
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # 并发槽位（第几个 worker），便于看并发分布
     slot: Mapped[int] = mapped_column(Integer, default=-1)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -1,17 +1,10 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { api, type AgentHealth, type LLMTestItem } from "@/api";
+import { api, type HealthInfo, type LLMTestItem } from "@/api";
 
 const router = useRouter();
-const health = ref<{
-  status: string;
-  llm_model: string;
-  has_api_key: boolean;
-  llm_base_url?: string;
-  llm_timeout?: number;
-  agents: AgentHealth[];
-} | null>(null);
+const health = ref<HealthInfo | null>(null);
 
 const agentIcons: Record<string, string> = {
   "Resume Agent": "RA",
@@ -80,6 +73,13 @@ function getAgentPingStatus(agentName: string): InlinePingStatus {
   }
 
   return { state: "ok", text: "正常" };
+}
+
+function networkAccessLabel(access: string) {
+  if (access === "disabled") return "";
+  if (access === "deep_forced_with_model_fallback") return "联网";
+  if (access === "forced_with_model_fallback") return "联网";
+  return "";
 }
 
 async function runPing() {
@@ -167,16 +167,7 @@ onMounted(async () => {
               </el-tag>
             </div>
             <div class="model-name">{{ agent.model }}</div>
-          </div>
-        </div>
-        <div class="health-grid">
-          <div class="health-metric">
-            <span>Agent 数量</span>
-            <b>{{ health?.agents?.length ?? 0 }}</b>
-          </div>
-          <div class="health-metric">
-            <span>连接状态</span>
-            <b>{{ health ? "正常" : "异常" }}</b>
+            <div v-if="networkAccessLabel(agent.network_access)" class="model-network">{{ networkAccessLabel(agent.network_access) }}</div>
           </div>
         </div>
         <div class="health-actions">
@@ -194,7 +185,7 @@ onMounted(async () => {
       <div class="agent-heading">
         <div>
           <div class="section-h agent-title">四个核心 Agent</div>
-          <div class="agent-sub">四个 Agent 分工清晰，首页首屏直接展示。</div>
+          <div class="agent-sub">从简历解析到岗位匹配，再到投递建议，四个智能体自动协作完成筛选流程。</div>
         </div>
       </div>
 
@@ -208,6 +199,12 @@ onMounted(async () => {
               {{ a.role }}
             </el-tag>
             <el-tag v-if="a.enable_thinking" size="small" type="success" effect="plain">Thinking</el-tag>
+            <el-tag
+              v-if="networkAccessLabel(a.network_access)"
+              size="small"
+              type="success"
+              effect="plain"
+            >{{ networkAccessLabel(a.network_access) }}</el-tag>
           </div>
           <div class="agent-model">{{ a.model }}</div>
           <div class="agent-status">
@@ -236,35 +233,36 @@ onMounted(async () => {
 }
 
 .hero-card {
-  padding: 24px 26px;
-  height: 100%;
+  padding: 16px 20px;
+  min-height: 430px;
 }
 
 .hero-card h1 {
   margin: 12px 0 10px;
   color: #112038;
-  font-size: 34px;
-  line-height: 1.12;
+  font-size: 30px;
+  line-height: 1.08;
   letter-spacing: -0.04em;
 }
 
 .hero-card p {
   max-width: 760px;
   color: #5d6a84;
-  font-size: 14px;
-  line-height: 1.75;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .hero-actions {
   display: flex;
   gap: 12px;
-  margin-top: 18px;
+  margin-top: 12px;
   flex-wrap: wrap;
 }
 
 .hero-primary-btn {
   min-width: 160px;
-  height: 50px;
+  height: 46px;
   padding: 0 24px;
   border: 1px solid rgba(84, 126, 255, 0.96);
   border-radius: 18px;
@@ -288,7 +286,7 @@ onMounted(async () => {
 
 .hero-secondary-btn {
   min-width: 120px;
-  height: 50px;
+  height: 46px;
   padding: 0 22px;
   border-radius: 18px;
   border-color: rgba(188, 199, 221, 0.72);
@@ -321,41 +319,41 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 20px;
+  margin-top: 12px;
 }
 
 .flow-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 16px;
+  gap: 14px;
+  min-height: 52px;
+  padding: 12px 16px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(169, 184, 214, 0.22);
   color: #354564;
-  font-size: 13px;
-  min-height: 52px;
+  font-size: 15px;
+
 }
 
 .flow-index {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   border-radius: 999px;
   display: grid;
   place-items: center;
   background: linear-gradient(135deg, rgba(106, 140, 255, 0.18), rgba(143, 211, 255, 0.42));
   color: #4563f3;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .hero-side {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 100%;
-  height: 100%;
-  padding: 20px 22px;
+  gap: 8px;
+  min-height: 430px;
+  padding: 16px 20px;
 }
 
 .health-row {
@@ -374,9 +372,9 @@ onMounted(async () => {
 }
 
 .health-title {
-  margin-top: 6px;
+  margin-top: 4px;
   color: #16253d;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 760;
   line-height: 1.2;
   word-break: break-word;
@@ -390,7 +388,7 @@ onMounted(async () => {
 
 .model-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .model-item {
@@ -404,7 +402,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 6px;
   color: #33415d;
   font-size: 12px;
   font-weight: 700;
@@ -414,7 +412,7 @@ onMounted(async () => {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   flex: 1;
 }
 
@@ -427,6 +425,13 @@ onMounted(async () => {
   word-break: break-word;
 }
 
+.model-network {
+  margin-top: 4px;
+  color: #2f8f63;
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .model-meta {
   margin-top: 4px;
   color: #7a8599;
@@ -434,8 +439,8 @@ onMounted(async () => {
 }
 
 .health-metric {
-  padding: 12px 14px;
-  border-radius: 16px;
+  padding: 9px 12px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(169, 184, 214, 0.22);
 }
@@ -536,8 +541,8 @@ onMounted(async () => {
 }
 
 .agent-section {
-  margin-top: 8px;
-  flex: 1;
+  margin-top: 6px;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
 }
@@ -569,13 +574,13 @@ onMounted(async () => {
 
 .agent-card {
   text-align: left;
-  padding: 16px 16px 14px;
-  min-height: 196px;
+  padding: 13px 14px;
+  min-height: 150px;
 }
 
 .agent-badge {
-  width: 38px;
-  height: 38px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   border-radius: 14px;
@@ -592,18 +597,18 @@ onMounted(async () => {
 }
 
 .agent-name {
-  margin-top: 12px;
+  margin-top: 8px;
   color: #16253c;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 720;
 }
 
 .agent-desc {
-  min-height: 44px;
-  margin-top: 8px;
+  min-height: 36px;
+  margin-top: 5px;
   color: #6a7690;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.42;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -618,7 +623,7 @@ onMounted(async () => {
 }
 
 .agent-model {
-  margin-top: 10px;
+  margin-top: 6px;
   color: #2f3d59;
   font-size: 12px;
   font-weight: 600;
@@ -633,7 +638,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 6px;
   color: #60708c;
   font-size: 12px;
 }
@@ -687,3 +692,16 @@ onMounted(async () => {
   }
 }
 </style>
+
+
+
+
+
+
+
+
+
+
+
+
+

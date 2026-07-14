@@ -24,6 +24,8 @@ def upsert_item_run(
     finished_at: datetime | None = None,
     duration_ms: int | None = None,
     slot: int | None = None,
+    phase: str | None = None,
+    metadata: dict | None = None,
 ) -> None:
     db = SessionLocal()
     try:
@@ -61,6 +63,10 @@ def upsert_item_run(
             row.duration_ms = duration_ms
         if slot is not None:
             row.slot = slot
+        if phase is not None:
+            row.phase = phase
+        if metadata is not None:
+            row.metadata_json = metadata
         db.commit()
     finally:
         db.close()

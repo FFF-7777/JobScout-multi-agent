@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProjectItem(BaseModel):
@@ -32,16 +32,15 @@ class ResumeParseRequest(BaseModel):
 
 
 class ResumeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     filename: str
     raw_text: str
     profile_json: ResumeProfile | None = None
+    ocr_metadata: dict | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
-
-    class Config:
-        from_attributes = True
-
 
 class ProfileUpdateRequest(BaseModel):
     profile_json: ResumeProfile

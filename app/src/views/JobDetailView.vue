@@ -82,7 +82,19 @@ const nextActions = computed(() => (dj.value as any)?.next_actions ?? []);
 const confidence = computed(() => (dj.value as any)?.confidence ?? null);
 const hardConditionResult = computed(() => (dj.value as any)?.hard_condition_result ?? null);
 const researchSummary = computed(() => (dj.value as any)?.research_summary ?? []);
-const researchMetadata = computed(() => (dj.value as any)?.research_metadata ?? null);
+const researchMetadata = computed(() => {
+  const detail = dj.value as any;
+  if (!detail) return null;
+  if (detail?.research_metadata) return detail.research_metadata;
+  return {
+    status: "legacy_unknown",
+    reason: "该结果生成于联网状态记录功能上线前，无法判断当时是否联网；重新分析后可获得完整状态。",
+  };
+});
+const ocrAudit = computed(() => job.value?.ocr_metadata ?? null);
+const ocrProviderChain = computed(() =>
+  (ocrAudit.value?.attempts || []).map((item: any) => item.provider).join(" → ")
+);
 const skillEvidenceSummary = computed(() => (dj.value as any)?.skill_evidence_summary ?? null);
 const skillEvidence = computed(() => (dj.value as any)?.skill_evidence ?? []);
 
@@ -105,10 +117,11 @@ function hrLabel(result?: string): string {
 }
 function researchStatusLabel(status?: string): string {
   return {
-    success: "联网成功",
-    degraded: "联网失败，已降级",
+    success: "联网",
+    degraded: "联网降级",
     skipped: "未触发",
     disabled: "未开启",
+    legacy_unknown: "历史状态未知",
   }[status || "disabled"] || "状态未知";
 }
 function researchStatusType(status?: string): "success" | "warning" | "info" {
@@ -125,7 +138,12 @@ const genDeepBusy = ref(false);
 const deepTask = ref<{ status: string; total: number; done: number; failed: number; elapsed: number } | null>(null);
 const deepProgress = computed(() => {
   if (!deepTask.value?.total) return 0;
-  return Math.round(((deepTask.value.done + deepTask.value.failed) / deepTask.value.total) * 100);
+  const task = deepTask.value;
+  const completed = task.done + task.failed;
+  if (["done", "partial", "failed"].includes(task.status)) {
+    return Math.min(100, Math.round((completed / task.total) * 100));
+  }
+  return Math.min(95, Math.max(2, Math.round((task.elapsed / (task.total * 120)) * 100)));
 });
 function fmtWait(seconds: number): string {
   const value = Math.max(0, Math.round(seconds));
@@ -203,8 +221,12 @@ async function load(targetId?: number | null) {
         // 404 / 网络错误退到 listResults
       }
       if (!r && store.taskId) {
-        const results = await api.listResults(store.taskId);
-        r = results.find((x) => x.job_id === id) || null;
+        try {
+          const results = await api.listResults({ task_id: store.taskId, page_size: 9999 });
+          r = results.items.find((x) => x.job_id === id) || null;
+        } catch {
+          // 匹配结果暂不可用不应阻断岗位基础信息展示。
+        }
       }
       match.value = r;
     } else {
@@ -430,6 +452,12 @@ function gotoResults() {
         <div class="sub-card">
           <div class="sub-head">JD OCR 识别结果</div>
           <div class="raw-source-note">以下内容为截图 / OCR / 导入链路拿到的原始文本，便于和结构化解析交叉核对。</div>
+          <div v-if="ocrAudit" class="ocr-audit-strip">
+            <span>最终来源：<b>{{ ocrAudit.final_provider || "未知" }}</b></span>
+            <span>降级次数：<b>{{ ocrAudit.fallback_level ?? 0 }}</b></span>
+            <span>质量分：<b>{{ Math.round((ocrAudit.quality_score || 0) * 100) }}%</b></span>
+            <span>链路：<b>{{ ocrProviderChain }}</b></span>
+          </div>
           <pre class="jd">{{ job.jd_text }}</pre>
         </div>
       </template>
@@ -487,7 +515,7 @@ function gotoResults() {
             <div class="deep-progress-meta">
               <span>{{ deepTask.done }} / {{ deepTask.total }} 已完成</span>
               <span>已等待 {{ fmtWait(deepTask.elapsed) }}</span>
-              <span v-if="!['done', 'partial'].includes(deepTask.status)">预计剩余约 {{ fmtWait(Math.max(1, 180 - deepTask.elapsed)) }}</span>
+              <span v-if="!['done', 'partial'].includes(deepTask.status)">预计剩余约 {{ fmtWait(Math.max(1, 120 - deepTask.elapsed)) }}</span>
               <span v-else>已保存到报告导出页</span>
             </div>
           </div>
@@ -610,6 +638,19 @@ function gotoResults() {
               <div v-if="researchMetadata?.source_notes?.length" class="research-sources">
                 <b>来源说明</b>
                 <div v-for="source in researchMetadata.source_notes" :key="source">{{ source }}</div>
+              </div>
+              <div v-if="researchMetadata?.sources?.length" class="research-sources">
+                <b>可核验来源</b>
+                <a
+                  v-for="source in researchMetadata.sources"
+                  :key="source.url"
+                  :href="source.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ source.title || source.url }}</a>
+              </div>
+              <div v-else-if="researchMetadata?.status === 'success'" class="research-error">
+                联网已返回摘要，但当前供应商未返回可核验链接。
               </div>
               <div v-if="researchMetadata?.error" class="research-error">
                 失败原因：{{ researchMetadata.error }}
@@ -1202,12 +1243,15 @@ ol {
 .module-action { border-top: 2px solid #5279d8; }
 .module-evidence-card { border-top: 2px solid #6b7bf0; }
 .module-research { border-top: 2px solid #4b83ff; background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); }
+.ocr-audit-strip { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0 12px; padding: 10px 12px; border: 1px solid #dfe7f5; border-radius: 10px; background: #f7f9fd; color: #667085; font-size: 12px; }
+.ocr-audit-strip b { color: #344054; }
 .research-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .research-meta-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 14px; color: #60708c; font-size: 12px; }
 .research-meta-row b { width: 100%; color: #344054; }
 .research-meta-row span { padding: 5px 9px; border: 1px solid #dbe5ff; border-radius: 999px; background: #f4f7ff; }
 .research-sources { margin-top: 12px; color: #60708c; font-size: 12px; line-height: 1.7; }
 .research-sources b { display: block; margin-bottom: 4px; color: #344054; }
+.research-sources a { display: block; color: #315fce; overflow-wrap: anywhere; }
 .research-error { margin-top: 10px; color: #b54708; font-size: 12px; overflow-wrap: anywhere; }
 
 .evidence-summary-grid {

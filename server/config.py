@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_FILE = PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore"
     )
 
     # 兼容旧配置：默认仍以 DashScope 为主；新配置可直接使用 LLM_API_KEY / LLM_PROVIDER / LLM_BASE_URL
@@ -52,7 +56,6 @@ class Settings(BaseSettings):
     llm_fallback_api_key: str = ""
 
     # 思考模式开关
-    llm_fast_enable_thinking: bool = False
     llm_reasoning_enable_thinking: bool = True
     llm_report_enable_thinking: bool = False
 
@@ -79,9 +82,7 @@ class Settings(BaseSettings):
     # 两段式匹配
     match_two_tier: bool = True
 
-    # 深度研究链路：仅深度分析可启用，快速分析始终不走外部研究
-    deep_research_enabled: bool = False
-    deep_research_strategy: str = "auto"  # off / auto / force
+    # 深度分析与深度报告固定强制尝试联网；这里只配置单次研究查询上限。
     deep_research_max_items: int = 6
 
     # 百度 OCR
@@ -93,6 +94,11 @@ class Settings(BaseSettings):
     ocr_provider: str = "tencent"
     tencent_ocr_secret_id: str = ""
     tencent_ocr_secret_key: str = ""
+    tencent_ocr_concurrency: int = 10
+    tencent_ocr_rate_per_sec: float = 10.0
+    baidu_ocr_concurrency: int = 3
+    baidu_ocr_rate_per_sec: float = 2.0
+    vision_ocr_concurrency: int = 2
 
     def _global_api_key(self) -> str:
         return (self.llm_api_key or self.dashscope_api_key or "").strip()

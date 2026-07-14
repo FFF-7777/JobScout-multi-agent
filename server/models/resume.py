@@ -17,6 +17,7 @@ class Resume(Base):
     raw_text: Mapped[str] = mapped_column(Text, default="")
     # 结构化候选人画像 ResumeProfile
     profile_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    ocr_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # 画像缓存：内容哈希 / 解析时间 / 画像版本（内容不变则跳过重新解析）
     content_hash: Mapped[str] = mapped_column(String(32), default="")
     parsed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

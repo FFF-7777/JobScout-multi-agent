@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DimensionScores(BaseModel):
@@ -84,6 +84,9 @@ class ResearchMetadata(BaseModel):
     attempted: bool = False
     queries: list[str] = Field(default_factory=list)
     source_notes: list[str] = Field(default_factory=list)
+    sources: list[dict] = Field(default_factory=list)
+    provider: str = ""
+    verifiable: bool = False
     reason: str = ""
     error: str = ""
 
@@ -122,6 +125,8 @@ class MatchRunRequest(BaseModel):
 
 
 class MatchResultOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     resume_id: int
     job_id: int
@@ -144,10 +149,6 @@ class MatchResultOut(BaseModel):
     job_title: str | None = None
     city: str | None = None
     salary: str | None = None
-
-    class Config:
-        from_attributes = True
-
 
 class PaginatedResults(BaseModel):
     items: list[MatchResultOut]

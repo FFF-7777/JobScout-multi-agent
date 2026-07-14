@@ -1,13 +1,11 @@
 """简历相关接口。"""
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from config import get_settings
 from database import get_db
 from models import JobReport, MatchResult, Report, Resume
 from schemas.resume import (
@@ -17,22 +15,13 @@ from schemas.resume import (
     ResumeOut,
     ResumeParseRequest,
 )
-from services import baidu_ocr, document_parser, resume_agent, vision_ocr
+from services import document_parser, ocr_pipeline, resume_agent
 
 router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 
 _MAX_UPLOAD = 10 * 1024 * 1024
 _MAX_IMAGES = 20
 _IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/bmp", "image/webp"}
-
-
-def _get_ocr_service():
-    provider = (get_settings().ocr_provider or "baidu").lower()
-    if provider == "tencent":
-        from services import tencent_ocr
-
-        return tencent_ocr, "tencent"
-    return baidu_ocr, "baidu"
 
 
 def _build_profile(resume: Resume, db: Session, text: str) -> Resume:
@@ -85,36 +74,22 @@ async def import_resume_images(
             raise HTTPException(413, f"文件 {f.filename} 过大（上限 {_MAX_UPLOAD // 1024 // 1024} MB）")
         images.append((data, f.filename or "resume-image"))
 
-    ocr_service, provider = _get_ocr_service()
     try:
-        ocr_results = await ocr_service.recognize_images_batch(images)
+        ocr_results = await ocr_pipeline.recognize_images(images, document_type="resume")
     except ValueError as e:
         raise HTTPException(400, f"OCR 识别失败：{e}") from e
 
     pages: list[str] = []
     failed: list[ResumeImportImageFailed] = []
-    vision_used = False
-    for idx, (image_data, image_name) in enumerate(images, start=1):
+    audit_pages: list[dict] = []
+    for idx, (_, image_name) in enumerate(images, start=1):
         item = ocr_results[idx - 1] if idx <= len(ocr_results) else {"filename": image_name, "error": "OCR 未返回结果"}
         filename = item.get("filename", f"page-{idx}") or image_name
         text = (item.get("text") or "").strip()
-        primary_error = str(item.get("error") or "").strip()
-        if primary_error or not text:
-            try:
-                text = (
-                    await asyncio.to_thread(
-                        vision_ocr.recognize_image,
-                        image_data,
-                        image_name,
-                        document_type="resume",
-                    )
-                ).strip()
-                vision_used = bool(text) or vision_used
-                primary_error = ""
-            except Exception as exc:  # noqa: BLE001
-                reason = primary_error or "未识别到文字"
-                failed.append(ResumeImportImageFailed(filename=filename, error=f"{reason}；视觉兜底失败：{exc}"))
-                continue
+        audit_pages.append({"filename": filename, **(item.get("audit") or {})})
+        if not text:
+            failed.append(ResumeImportImageFailed(filename=filename, error=str(item.get("error") or "未识别到文字")))
+            continue
         if not text:
             failed.append(ResumeImportImageFailed(filename=filename, error="未识别到文字"))
             continue
@@ -128,7 +103,7 @@ async def import_resume_images(
     first_name = files[0].filename or "resume-image"
     filename = first_name if len(files) == 1 else f"{first_name.rsplit('.', 1)[0]}-images.txt"
 
-    resume = Resume(filename=filename, raw_text=merged_text)
+    resume = Resume(filename=filename, raw_text=merged_text, ocr_metadata={"pages": audit_pages})
     db.add(resume)
     db.commit()
     db.refresh(resume)
@@ -138,7 +113,7 @@ async def import_resume_images(
         resume=resume,
         total=len(files),
         success=len(pages),
-        provider=f"{provider}+vision" if vision_used else provider,
+        provider="tencent→baidu→vision",
         failed=failed,
     )
 

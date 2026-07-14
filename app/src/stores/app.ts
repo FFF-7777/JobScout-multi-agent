@@ -2,7 +2,9 @@ import { defineStore } from "pinia";
 import type { Resume, ResumeProfile, ResumeSummary } from "@/api";
 
 const STORAGE_KEY = "jobscout-store";
-const STORAGE_VERSION = 4;
+const TASK_SESSION_KEY = "jobscout-current-task-id";
+const REPORT_TASK_SESSION_KEY = "jobscout-current-report-task";
+const STORAGE_VERSION = 7;
 
 type Persisted = {
   v: number;
@@ -10,10 +12,8 @@ type Persisted = {
   resumeName: string;
   resume: Resume | null;
   profile: ResumeProfile | null;
-  taskId: string | null;
   resumeList: ResumeSummary[];
   selectedJobIds: number[];
-  reportTask: { taskId: string; mode: "standard" | "deep"; total: number } | null;
 };
 
 function loadPersisted(): Partial<Persisted> {
@@ -27,10 +27,8 @@ function loadPersisted(): Partial<Persisted> {
         resumeName: parsed.resumeName ?? "",
         resume: parsed.resume ?? null,
         profile: parsed.profile ?? null,
-        taskId: parsed.taskId ?? null,
         resumeList: Array.isArray(parsed.resumeList) ? parsed.resumeList : [],
         selectedJobIds: Array.isArray(parsed.selectedJobIds) ? parsed.selectedJobIds : [],
-        reportTask: parsed.reportTask ?? null,
       };
     }
     return parsed;
@@ -55,10 +53,18 @@ export const useAppStore = defineStore("app", {
       resumeName: p.resumeName ?? "",
       resume: p.resume ?? null,
       profile: p.profile ?? null,
-      taskId: p.taskId ?? null,
+      // 当前分析任务只属于当前浏览器会话，不能从长期缓存恢复历史任务。
+      taskId: sessionStorage.getItem(TASK_SESSION_KEY),
       resumeList: p.resumeList ?? [],
       selectedJobIds: p.selectedJobIds ?? [],
-      reportTask: p.reportTask ?? null,
+      reportTask: (() => {
+        try {
+          const value = sessionStorage.getItem(REPORT_TASK_SESSION_KEY);
+          return value ? JSON.parse(value) : null;
+        } catch {
+          return null;
+        }
+      })(),
     };
   },
   actions: {
@@ -78,7 +84,8 @@ export const useAppStore = defineStore("app", {
     },
     setTask(id: string) {
       this.taskId = id;
-      this._persist();
+      if (id) sessionStorage.setItem(TASK_SESSION_KEY, id);
+      else sessionStorage.removeItem(TASK_SESSION_KEY);
     },
     setResumeList(list: ResumeSummary[]) {
       this.resumeList = list;
@@ -97,7 +104,8 @@ export const useAppStore = defineStore("app", {
     },
     setReportTask(task: { taskId: string; mode: "standard" | "deep"; total: number } | null) {
       this.reportTask = task;
-      this._persist();
+      if (task) sessionStorage.setItem(REPORT_TASK_SESSION_KEY, JSON.stringify(task));
+      else sessionStorage.removeItem(REPORT_TASK_SESSION_KEY);
     },
     _persist() {
       save({
@@ -106,10 +114,8 @@ export const useAppStore = defineStore("app", {
         resumeName: this.resumeName,
         resume: this.resume,
         profile: this.profile,
-        taskId: this.taskId,
         resumeList: this.resumeList,
         selectedJobIds: this.selectedJobIds,
-        reportTask: this.reportTask,
       });
     },
   },

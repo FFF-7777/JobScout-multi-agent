@@ -49,7 +49,7 @@ def _get_client(model_role: str) -> OpenAI:
     base_url = settings.resolve_base_url(model_role)
     if not api_key:
         raise LLMConfigError(
-            f"{_role_label(model_role)}未配置 API Key，请在 server/.env 中填写对应的 LLM_*_API_KEY，或填写全局 LLM_API_KEY。"
+            f"{_role_label(model_role)}未配置 API Key，请在项目根目录 .env 中填写对应的 LLM_*_API_KEY，或填写全局 LLM_API_KEY。"
         )
     key = (api_key, base_url, settings.llm_timeout)
     client = _clients.get(key)
@@ -74,10 +74,18 @@ def _resolve_provider(role: str) -> str:
 def _resolve_enable_thinking(role: str) -> bool:
     s = get_settings()
     return {
-        "fast": s.llm_fast_enable_thinking,
+        # 产品合同：基础分析固定为快速模式，环境变量不能误开启思考。
+        "fast": False,
         "reasoning": s.llm_reasoning_enable_thinking,
         "report": s.llm_report_enable_thinking,
     }.get(role, False)
+
+
+def _normalize_search_strategy(search_strategy: str) -> str:
+    strategy = (search_strategy or "auto").lower()
+    if strategy in {"auto", "force", "forced"}:
+        return "turbo"
+    return strategy
 
 
 def describe_role(role: str) -> dict[str, str | bool]:
@@ -150,8 +158,10 @@ def chat_text(
             extra_body["enable_thinking"] = True
         if enable_search:
             extra_body["enable_search"] = True
-            extra_body["forced_search"] = forced_search
-            extra_body["search_strategy"] = search_strategy
+            extra_body["search_options"] = {
+                "forced_search": forced_search,
+                "search_strategy": _normalize_search_strategy(search_strategy),
+            }
         if extra_body:
             kwargs["extra_body"] = extra_body
         resp = _get_client(role).chat.completions.create(**kwargs)
@@ -201,6 +211,109 @@ def chat_image_text(
     return text
 
 
+def chat_json_with_search_metadata(
+    system: str,
+    user: str,
+    *,
+    model_role: str = "reasoning",
+    forced_search: bool = False,
+    search_strategy: str = "auto",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """联网生成 JSON，并在 DashScope 原生协议下返回可核验搜索来源。"""
+    settings = get_settings()
+    provider = settings.resolve_provider(model_role).lower()
+    if provider != "dashscope":
+        data = chat_json(
+            system,
+            user,
+            model_role=model_role,
+            enable_search=True,
+            forced_search=forced_search,
+            search_strategy=search_strategy,
+        )
+        return data, {"performed": None, "sources": [], "provider": provider, "verifiable": False}
+
+    def _do():
+        client = _get_client(model_role)
+        if hasattr(client, "responses"):
+            return client.responses.create(
+                model=_resolve_model(model_role),
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                tools=[{"type": "web_search"}, {"type": "web_extractor"}],
+                extra_body={
+                    "enable_thinking": _resolve_enable_thinking(model_role),
+                    "enable_search": True,
+                    "search_options": {
+                        "forced_search": forced_search,
+                        "search_strategy": _normalize_search_strategy(search_strategy),
+                    },
+                },
+            )
+        kwargs: dict[str, Any] = {
+            "model": _resolve_model(model_role),
+            "temperature": getattr(settings, "llm_temperature", 0),
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "extra_body": {
+                "enable_search": True,
+                "search_options": {
+                    "forced_search": forced_search,
+                    "search_strategy": _normalize_search_strategy(search_strategy),
+                },
+            },
+        }
+        if _resolve_enable_thinking(model_role):
+            kwargs["extra_body"]["enable_thinking"] = True
+        return client.chat.completions.create(**kwargs)
+
+    response = _with_retry(_do)
+    raw_response = response.model_dump()
+    content = (
+        getattr(response, "output_text", None)
+        or getattr(response.choices[0].message, "content", "")
+        or ""
+    ).strip()
+    parsed = _try_parse(content)
+    if parsed is None:
+        raise LLMOutputError(f"联网模型未返回可解析的 JSON：{content[:500]}")
+    output_items = raw_response.get("output") or raw_response
+    sources_by_url: dict[str, dict[str, str]] = {}
+
+    def collect_sources(value: Any) -> None:
+        if isinstance(value, dict):
+            url = str(value.get("url") or "").strip()
+            if url.startswith(("http://", "https://")):
+                sources_by_url[url] = {
+                    "title": str(value.get("title") or value.get("site_name") or url).strip(),
+                    "url": url,
+                    "site_name": str(value.get("site_name") or "").strip(),
+                    "published_at": str(value.get("published_at") or value.get("publish_time") or "").strip(),
+                }
+            for child in value.values():
+                collect_sources(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_sources(child)
+
+    collect_sources(output_items)
+    sources = list(sources_by_url.values())[:12]
+    return parsed, {
+        # DashScope compatible-mode chat responses may not expose a first-class
+        # "web_search performed" flag in the pinned OpenAI SDK. For forced
+        # search, treat a successful response as attempted/performed, while
+        # keeping verifiability tied to actual URL sources.
+        "performed": bool(sources) or forced_search,
+        "sources": sources,
+        "provider": provider,
+        "verifiable": bool(sources),
+    }
+
+
 def chat_json(
     system: str,
     user: str,
@@ -241,8 +354,10 @@ def chat_json(
                 extra_body["enable_thinking"] = True
             if enable_search:
                 extra_body["enable_search"] = True
-                extra_body["forced_search"] = forced_search
-                extra_body["search_strategy"] = search_strategy
+                extra_body["search_options"] = {
+                    "forced_search": forced_search,
+                    "search_strategy": _normalize_search_strategy(search_strategy),
+                }
             if extra_body:
                 kwargs["extra_body"] = extra_body
             elif _use_response_format:

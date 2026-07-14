@@ -29,6 +29,7 @@ class Job(Base):
     # 解析状态：pending / parsing / success / failed
     parse_status: Mapped[str] = mapped_column(String(16), default="pending")
     parse_error: Mapped[str] = mapped_column(String(512), default="")
+    ocr_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # 分析模式：summary（默认，只用画像 JSON）/ full（额外喂简历全文，更准但慢）
     analyze_mode: Mapped[str] = mapped_column(String(16), default="summary")
     created_at: Mapped[datetime] = mapped_column(

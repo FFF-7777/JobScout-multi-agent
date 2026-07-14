@@ -22,7 +22,7 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install -r requirements.txt
       - name: Prepare .env from template
-        run: cp .env.example .env
+        run: cp ../.env.example ../.env
       - name: Start server & smoke test (import-text 不依赖 LLM Key)
         run: |
           .venv/bin/uvicorn main:app --port 8020 &

@@ -1,7 +1,6 @@
 """岗位相关接口。"""
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,22 +20,11 @@ from schemas.job import (
     ImportImagesResult,
     ImportImageFailed,
 )
-from services import baidu_ocr, document_parser, job_agent, url_fetcher, vision_ocr
-from services.jd_preprocessor import assess_ocr_quality, clean_ocr_jd, clean_web_jd
+from services import document_parser, job_agent, ocr_pipeline, url_fetcher
+from services.jd_preprocessor import clean_ocr_jd, clean_web_jd
 from services.job_parse_queue import enqueue_parse
 
 logger = logging.getLogger(__name__)
-
-# 延迟导入 OCR 服务商模块，运行时根据 settings.ocr_provider 选择
-def _get_ocr_service():
-    from config import get_settings
-
-    provider = (get_settings().ocr_provider or "baidu").lower()
-    if provider == "tencent":
-        from services import tencent_ocr
-
-        return tencent_ocr, "tencent"
-    return baidu_ocr, "baidu"
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -232,11 +220,8 @@ async def import_images(
             raise HTTPException(413, f"文件 {f.filename} 过大（上限 {_MAX_UPLOAD // 1024 // 1024} MB）")
         images.append((data, f.filename or "image"))
 
-    # 根据 OCR_PROVIDER 选择服务商（百度 / 腾讯）批量识别
-    settings = get_settings()
-    ocr_service, provider = _get_ocr_service()
     try:
-        ocr_results = await ocr_service.recognize_images_batch(images)
+        ocr_results = await ocr_pipeline.recognize_images(images, document_type="job")
     except ValueError as e:
         raise HTTPException(400, f"OCR 识别失败：{e}") from e
 
@@ -245,33 +230,17 @@ async def import_images(
     created_ids: list[int] = []
     vision_fallback_count = 0
 
-    for index, (image_data, image_name) in enumerate(images):
+    for index, (_, image_name) in enumerate(images):
         res = ocr_results[index] if index < len(ocr_results) else {"filename": image_name, "error": "OCR 未返回结果"}
         fname = res.get("filename", "") or image_name
         text = (res.get("text") or "").strip()
-        primary_error = str(res.get("error") or "").strip()
-        needs_vision = bool(primary_error) or not text or assess_ocr_quality(text) < 0.65
-        if needs_vision:
-            try:
-                vision_text = await asyncio.to_thread(
-                    vision_ocr.recognize_image,
-                    image_data,
-                    image_name,
-                    document_type="job",
-                )
-                if vision_text.strip():
-                    text = vision_text.strip()
-                    primary_error = ""
-                    vision_fallback_count += 1
-            except Exception as exc:  # noqa: BLE001
-                if not text:
-                    reason = primary_error or "未识别到文字"
-                    failed.append(ImportImageFailed(filename=fname, error=f"{reason}；视觉兜底失败：{exc}"))
-                    continue
         if not text:
-            failed.append(ImportImageFailed(filename=fname, error="未识别到文字"))
+            failed.append(ImportImageFailed(filename=fname, error=str(res.get("error") or "未识别到文字")))
             continue
-        job = Job(source="ocr_image", jd_text=text[:30000])
+        audit = res.get("audit") or {}
+        if audit.get("final_provider") == "vision":
+            vision_fallback_count += 1
+        job = Job(source="ocr_image", jd_text=text[:30000], ocr_metadata=audit)
         db.add(job)
         db.commit()
         db.refresh(job)
@@ -290,7 +259,7 @@ async def import_images(
     return ImportImagesResult(
         created=created,
         failed=failed,
-        provider=provider,
+        provider="tencent→baidu→vision",
         vision_fallback_count=vision_fallback_count,
     )
 

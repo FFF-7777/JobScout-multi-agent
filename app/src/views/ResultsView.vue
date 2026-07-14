@@ -1,8 +1,8 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useRouter } from "vue-router";
-import { api, type MatchResult, type ReportTaskItem } from "@/api";
+import { api, type MatchResult } from "@/api";
 import { useAppStore } from "@/stores/app";
 import JobDetailView from "@/views/JobDetailView.vue";
 
@@ -41,7 +41,7 @@ function closeDetail() {
 }
 
 const matchRunning = computed(
-  () => taskStatus.value === "running" || taskStatus.value === ""
+  () => Boolean(store.taskId) && (taskStatus.value === "running" || taskStatus.value === "")
 );
 
 const taskStatusMeta = computed(() => {
@@ -120,14 +120,21 @@ function researchSummary(row: MatchResult): string[] {
   return dj(row)?.research_summary ?? [];
 }
 function researchMetadata(row: MatchResult): any {
-  return dj(row)?.research_metadata ?? null;
+  const detail = dj(row);
+  if (!detail) return null;
+  if (detail?.research_metadata) return detail.research_metadata;
+  return {
+    status: "legacy_unknown",
+    reason: "该结果生成于联网状态记录功能上线前，无法判断当时是否联网；重新分析后可获得完整状态。",
+  };
 }
 function researchStatusLabel(status?: string): string {
   return {
-    success: "联网成功",
-    degraded: "联网失败，已降级",
+    success: "联网",
+    degraded: "联网降级",
     skipped: "未触发",
     disabled: "未开启",
+    legacy_unknown: "历史状态未知",
   }[status || "disabled"] || "状态未知";
 }
 function skillEvidenceSummary(row: MatchResult): any {
@@ -140,6 +147,7 @@ function hrLabel(result?: string): string {
 async function loadResults() {
   loading.value = true;
   try {
+    // 推荐结果页展示历史全量分析结果；当前任务状态只用于顶部提示，不用于过滤表格。
     const res = await api.listResults({ page_size: 9999 });
     results.value = res.items;
   } catch (e: any) {
@@ -162,6 +170,7 @@ async function pollTask() {
 async function startPolling() {
   await pollTask();
   await loadResults();
+  if (!store.taskId) return;
   if (taskStatus.value === "running" || taskStatus.value === "") {
     pollTimer = window.setInterval(async () => {
       await pollTask();
@@ -172,7 +181,7 @@ async function startPolling() {
           pollTimer = null;
         }
       }
-    }, 2500);
+    }, 2000);
   }
 }
 
@@ -297,7 +306,13 @@ const deepTaskRunning = computed(() => {
 const deepProgress = computed(() => {
   const task = deepTask.value;
   if (!task?.total) return 0;
-  return Math.min(100, Math.round(((task.done + task.failed) / task.total) * 100));
+  const completed = task.done + task.failed;
+  if (["done", "partial", "failed"].includes(task.status)) {
+    return Math.min(100, Math.round((completed / task.total) * 100));
+  }
+  const completedRatio = completed / task.total;
+  const elapsedRatio = task.elapsed / Math.max(1, task.total * 120);
+  return Math.min(95, Math.max(2, Math.round(Math.max(completedRatio, elapsedRatio) * 100)));
 });
 const deepEta = computed(() => {
   const task = deepTask.value;
@@ -305,8 +320,8 @@ const deepEta = computed(() => {
   const completed = task.done + task.failed;
   const remaining = Math.max(0, task.total - completed);
   if (!remaining) return 0;
-  const perItem = completed > 0 ? task.elapsed / completed : 180;
-  return Math.max(1, Math.round(perItem * remaining));
+  const estimatedTotal = task.total * 120;
+  return Math.max(1, Math.round(estimatedTotal - task.elapsed));
 });
 
 const deepTaskTitle = computed(() => {
@@ -334,16 +349,19 @@ function stopDeepPoll() {
 }
 
 function _deepTimeout(total: number): number {
-  // 深度报告按每份约 3 分钟估算；轮询超时仅结束前端等待，不会中断后台任务。
-  const perItem = 180 * 1000;
+  // 深度报告按每份约 4 分钟估算；轮询超时仅结束前端等待，不会中断后台任务。
+  const perItem = 240 * 1000;
   const estimated = total * perItem;
   return Math.max(3 * 60 * 1000, Math.min(60 * 60 * 1000, estimated));
 }
 
-function taskStartedAt(createdAt?: string | null) {
-  if (!createdAt) return Date.now();
-  const parsed = new Date(createdAt).getTime();
-  return Number.isFinite(parsed) ? parsed : Date.now();
+function taskStartedAt(taskId: string) {
+  const key = `jobscout-report-start:${taskId}`;
+  const saved = Number(sessionStorage.getItem(key));
+  if (Number.isFinite(saved) && saved > 0) return saved;
+  const startedAt = Date.now();
+  sessionStorage.setItem(key, String(startedAt));
+  return startedAt;
 }
 
 function setDeepTaskFromTask(
@@ -368,7 +386,7 @@ async function pollDeepTask(
   silent = false
 ) {
   const seq = ++deepPollSeq;
-  const start = taskStartedAt(createdAt);
+  const start = taskStartedAt(taskId);
   const pollStart = Date.now();
   const timeout = _deepTimeout(total);
   deepTask.value = { taskId, status: "queued", total, done: 0, failed: 0, startedAt: start, elapsed: 0 };
@@ -405,23 +423,14 @@ async function pollDeepTask(
 async function restoreActiveDeepReportTask() {
   if (deepTaskRunning.value) return;
   try {
-    const active = await api.listActiveReportTasks();
-    const task = active.find((item: ReportTaskItem) => item.mode === "deep");
-    if (task) {
-      store.setReportTask({ taskId: task.task_id, mode: "deep", total: task.total });
-      setDeepTaskFromTask(task, taskStartedAt(task.created_at));
-      void pollDeepTask(task.task_id, task.total, task.created_at, true);
-      return;
-    }
-
     if (store.reportTask?.mode === "deep") {
       const saved = store.reportTask;
       const current = await api.getReportTask(saved.taskId);
       if (current.status === "queued" || current.status === "running") {
-        setDeepTaskFromTask(current, taskStartedAt(current.created_at));
+        setDeepTaskFromTask(current, taskStartedAt(current.task_id));
         void pollDeepTask(saved.taskId, saved.total || current.total, current.created_at, true);
       } else {
-        setDeepTaskFromTask(current, taskStartedAt(current.created_at));
+        setDeepTaskFromTask(current, taskStartedAt(current.task_id));
         store.setReportTask(null);
         await loadResults();
       }
@@ -572,7 +581,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
         :disabled="results.length === 0 || deepTaskRunning"
         @click="genReports('deep')"
       >
-        {{ deepTaskRunning ? "深度报告生成中" : `生成深度报告${selectedIds.length ? "（选中）" : "（全部）"}` }}
+        {{ deepTaskRunning ? "深度报告联网生成中" : `生成深度报告（联网）${selectedIds.length ? "· 选中" : "· 全部"}` }}
       </el-button>
       <el-button
         v-if="failedCount > 0"
@@ -619,7 +628,7 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
         :data="paginated"
         style="width: 100%"
         row-key="id"
-        empty-text="暂无结果，请先在 Agent 执行页运行分析"
+        empty-text="暂无推荐结果，请先运行一次岗位分析"
         @row-click="(row: MatchResult) => openDetail(row.job_id)"
         :row-style="{ cursor: 'pointer' }"
         @selection-change="(rows: MatchResult[]) => (selectedIds = rows.map((r) => r.id))"
@@ -694,6 +703,17 @@ watch([cityFilter, levelFilter, decisionFilter, skillFilter], () => {
                 </div>
                 <div v-if="researchMetadata(row)?.source_notes?.length" class="expand-muted" style="margin-top: 8px">
                   来源说明：{{ researchMetadata(row).source_notes.join("；") }}
+                </div>
+                <div v-if="researchMetadata(row)?.sources?.length" class="expand-muted" style="margin-top: 8px">
+                  可核验来源：
+                  <a
+                    v-for="source in researchMetadata(row).sources"
+                    :key="source.url"
+                    :href="source.url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    @click.stop
+                  >{{ source.title || source.url }}；</a>
                 </div>
                 <div v-if="researchMetadata(row)?.error" class="expand-muted" style="margin-top: 8px; color: #b54708">
                   失败原因：{{ researchMetadata(row).error }}

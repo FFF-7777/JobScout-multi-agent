@@ -1,154 +1,307 @@
-# JobScout · AI 求职岗位筛选与匹配多智能体助手
+<div align="center">
 
-> 基于固定简历，自动分析岗位 JD，筛选最值得投递的公司和具体岗位，并生成匹配度评分、投递优先级和面试准备建议。
+# JobScout
 
-JobScout 不是帮你反复改简历，而是帮你从大量岗位中筛出：**哪些岗位最值得投？为什么值得投？哪里匹配？哪里有短板？面试会问什么？投递时怎么介绍自己？**
+### AI 求职岗位筛选与匹配多智能体助手
 
-技术栈：**FastAPI + LangGraph + 通义千问（阿里云百炼）+ Vue3 + Element Plus**。通过 4 个核心 Agent 编排完整工作流，保存每一步执行状态，实现多 Agent 任务流转与过程可视化。
+固定一份简历，批量理解岗位，快速找出真正值得投递的机会。
+
+`Vue 3` · `FastAPI` · `LangGraph` · `SQLAlchemy` · `阿里云百炼` · `多级 OCR`
+
+</div>
 
 ---
 
-## ✨ 核心能力
+JobScout 面向需要处理大量招聘岗位的求职者。它不仅给出一个匹配分数，还会结合简历证据、岗位硬条件、职业方向和公开信息，回答四个更重要的问题：
 
-- 📄 **Resume Agent**：解析简历（PDF/DOCX/MD/TXT/粘贴文本）→ 结构化候选人画像（技能、项目、目标岗位、优劣势）
-- 🏢 **Job Agent**：解析单个/批量 JD 及 Excel·CSV 岗位表 → 抽取技术栈、任职要求与风险标签（外包/培训/销售/运营/助教/不相关）
-- 🎯 **Match Agent**：规则分 + LLM 五维分加权 → 匹配度评分与 S/A/B/C/D 推荐等级，支持批量排序
-- 📝 **Report Agent**：生成投递建议、面试题预测、项目讲解重点、BOSS 打招呼话术与 HR 私信，支持导出 Markdown / Excel
-- 🔗 **LangGraph 工作流**：`parse_resume → parse_jobs → match_jobs → generate_report`，每步状态落库并前端实时可视化
+- 这个岗位是否值得投？
+- 匹配依据和关键缺口是什么？
+- 哪些风险会影响简历筛选和面试？
+- 投递前应该补充什么、面试时应该怎么表达？
 
-### 🧭 两种分析模式（按岗位粒度）
+> [!IMPORTANT]
+> **待补截图 01：产品首页总览**
+>
+> 页面：`/`；文件：`docs/images/readme/01-home.png`。
+> 建议使用 1440 × 900 浏览器窗口，完整拍到首页主卡片、模型状态和四个智能体卡片。
 
-每个岗位可独立设置分析模式，匹配/报告 Agent 据此改变输入：
+<!-- 截图到位后删除上方待补提示，并取消下一行注释：
+![JobScout 产品首页](docs/images/readme/01-home.png)
+-->
 
-| 模式 | 含义 | 代价 |
-| --- | --- | --- |
-| **快速分析**（summary） | 仅用结构化简历画像匹配 | 默认，最快 |
-| **深度分析**（full） | 额外把最多 8000 字简历原文传给 Match / Report Agent，匹配点与缺口更精准 | 单次 LLM 调用 token 翻倍、更慢 |
+## 产品流程
 
-> 深度分析是「简历全文增强」：岗位端仍只传结构化 JobProfile，增加的是简历原文。单次任务选中的深度分析岗位**最多 10 个**（启动即校验），避免 LLM 额度与耗时失控。
+```text
+导入一份固定简历
+        ↓
+生成候选人结构化画像
+        ↓
+批量导入、OCR 或抓取岗位 JD
+        ↓
+选择基础分析或深度分析
+        ↓
+按后端并发逐岗位匹配
+        ↓
+筛选推荐结果、查看证据与风险
+        ↓
+按需生成基础报告或深度报告
+```
 
-### 🖼️ 三种岗位输入路径
+简历智能体和岗位智能体在导入阶段完成结构化准备。开始分析后，工作流直接复用已有结果进行岗位匹配和结果整理，不会为了展示动画重复调用前置模型。
 
-1. **文本 / Excel / CSV**：直接粘贴 JD、上传表格，或通过岗位链接自动抓取。
-2. **浏览器一键采集**：根目录 `jobscout-import.user.js`（需 Tampermonkey）支持 **BOSS 直聘 / 猎聘 / 智联招聘 / 拉勾 / 前程无忧**，自动定位 JD 区域并发送到本地接口。
-3. **岗位截图 OCR**：上传最多 20 张 JD 截图（每张 ≤10 MB），调用百度或腾讯 OCR 识别后入库；也支持**在页面直接 `Ctrl+V` 粘贴截图**加入待导入队列。
-   - OCR 服务商通过 `OCR_PROVIDER=baidu|tencent` 切换；百度高精度版 50 次/天，腾讯云 1000 次/月。
+## 核心能力
 
-## 🖼️ 页面一览
-
-| 页面 | 说明 |
+| 能力 | 当前实现 |
 | --- | --- |
-| 首页 | 项目介绍、核心流程、4 Agent 卡片 |
-| 简历画像 | 上传/粘贴简历，展示并可编辑技能/项目/目标岗位 |
-| 岗位导入 | 单个/批量 JD、Excel·CSV 导入、岗位链接抓取、**截图 OCR（含 Ctrl+V 粘贴）**、深度/快速分析模式切换，待分析岗位列表 |
-| **Agent 执行流程** | 4 个 Agent 实时状态 + 输出摘要（README 核心截图） |
-| **岗位推荐结果** | 匹配度排序表格，城市/等级/技术栈筛选，导出 Excel |
-| **岗位详情分析** | JD 原文、技术栈、匹配点、缺口、风险、面试题、话术 |
-| 报告导出 | 历史报告、Markdown / Excel 导出 |
+| 简历画像 | 支持 PDF、DOCX、Markdown、TXT、粘贴文本和多张截图合并为一份简历 |
+| 岗位导入 | 支持单条或批量 JD、Excel、CSV、智联招聘链接和最多 20 张岗位截图 |
+| OCR 降级 | 腾讯 OCR → 失败项转百度 OCR → 仍失败项转阿里云百炼视觉模型 |
+| 岗位结构化 | 提取公司、岗位、城市、薪资、学历、经验、技术栈、职责、硬条件和风险信号 |
+| 基础分析 | 快速模型，不联网，不开启思考模式 |
+| 深度分析 | 结合简历原文、结构化画像和清洗后的 JD，固定尝试联网 |
+| 失败隔离 | 单个岗位、OCR 或联网调用失败不会阻断同批其他任务 |
+| 报告体系 | 基础报告和深度报告独立保存；支持 Markdown 与 Excel 导出 |
+| 执行可视化 | 展示阶段、逐岗位状态、错误原因、真实完成数和预计剩余时间 |
 
-> 架构图与工作流图见 [`docs/architecture.md`](docs/architecture.md)。
+## 从原始材料到可验证结果
 
-## 🚀 快速开始
+### 1. 简历画像
 
-### 方式一：本地开发
+文本简历直接解析；图片简历允许一次上传多张图片并按顺序合成为一份简历。结构化画像保留技能、项目、目标岗位和求职条件，后续深度分析还会同时使用简历原文，避免结构化过程丢失细节。
 
-**1. 后端**
+> [!IMPORTANT]
+> **待补截图 02：简历画像结果**
+>
+> 页面：`/resume`；文件：`docs/images/readme/02-resume-profile.png`。
+> 请使用脱敏简历，拍到上传入口、候选人基本信息、技能和项目区，不要暴露手机号、邮箱和 API Key。
 
-```bash
+<!-- ![简历画像](docs/images/readme/02-resume-profile.png) -->
+
+### 2. 岗位导入与结构化
+
+岗位可通过文本、表格、招聘链接或截图导入。OCR 原文会先清理招聘页面噪声，再由岗位智能体生成结构化内容；详情页同时保留结构化解析和 OCR 识别结果，便于核对信息是否遗漏。
+
+> [!IMPORTANT]
+> **待补截图 03：岗位导入与待分析列表**
+>
+> 页面：`/jobs`；文件：`docs/images/readme/03-job-import.png`。
+> 拍到导入方式、截图数量上限、基础/深度模式、已解析岗位列表和明显的开始分析按钮。
+
+<!-- ![岗位导入](docs/images/readme/03-job-import.png) -->
+
+### 3. 基础分析与深度分析
+
+| 模式 | 模型行为 | 联网行为 | 适合场景 |
+| --- | --- | --- | --- |
+| 基础分析 | 快速模型，不思考 | 不联网 | 大批量初筛、低成本排序 |
+| 深度分析 | 推理模型，使用更多简历细节 | 固定尝试联网，失败自动降级 | 重点岗位、公司核验、投递决策 |
+
+深度分析不是“先做一遍基础分析再做一遍深度分析”。用户勾选深度岗位后，该岗位直接进入深度链路，避免重复成本。联网失败时模型基于已有简历、岗位和匹配证据继续完成任务，并记录降级原因。
+
+### 4. Agent 执行流
+
+任务状态来自后端持久化数据，不由前端伪造。页面展示当前阶段、单岗位执行状态、成功/失败数量、进度和剩余时间；用户切换页面后可以根据后台任务恢复状态。
+
+> [!IMPORTANT]
+> **待补截图 04：正在运行的分析执行流**
+>
+> 页面：`/run`；文件：`docs/images/readme/04-execution-flow.png`。
+> 请在任务执行中截图，至少包含一个处理中岗位、进度条、预计剩余时间、基础/深度数量和“深度联网已接入”状态。
+
+<!-- ![Agent 执行流](docs/images/readme/04-execution-flow.png) -->
+
+### 5. 推荐结果与岗位详情
+
+推荐结果支持按城市、等级、投递决策、技术栈、时间和分数筛选。岗位详情会展示匹配证据、硬条件、技术栈覆盖、主要优势、关键缺口、联网状态和下一步建议。
+
+> [!IMPORTANT]
+> **待补截图 05：岗位推荐结果**
+>
+> 页面：`/results`；文件：`docs/images/readme/05-results.png`。
+> 选择一组有明显分数差异的岗位，拍到筛选器、公司与岗位、分数、等级、投递建议和报告按钮。
+
+<!-- ![岗位推荐结果](docs/images/readme/05-results.png) -->
+
+### 6. 报告生成与导出
+
+基础报告和深度报告使用独立版本保存。正在生成的报告会显示占位卡片和后台进度；刷新或切换页面后仍可恢复。深度报告固定尝试联网，联网失败不会阻止报告模型继续生成。
+
+> [!IMPORTANT]
+> **待补截图 06：报告导出页面**
+>
+> 页面：`/reports`；文件：`docs/images/readme/06-reports.png`。
+> 拍到左侧历史报告、基础/深度标签、报告正文和 Markdown/Excel 导出按钮；最好同时包含一个生成中的占位卡片。
+
+<!-- ![报告导出](docs/images/readme/06-reports.png) -->
+
+完整拍摄规范见 [README 截图清单](docs/images/readme/README.md)。
+
+## 技术架构
+
+| 层级 | 技术与职责 |
+| --- | --- |
+| 前端 | Vue 3、TypeScript、Vite、Pinia、Element Plus；负责交互和结构化状态展示 |
+| API | FastAPI、Pydantic；负责协议映射、参数校验和错误响应 |
+| 工作流 | LangGraph；编排简历、岗位、匹配和报告阶段 |
+| 业务服务 | OCR、JD 清洗、模型路由、匹配、联网研究、报告生成和并发治理 |
+| 数据 | SQLAlchemy、Alembic、SQLite；保存业务数据、任务状态和报告版本 |
+| 模型 | OpenAI 兼容接口；各档位可独立配置厂商、Base URL、API Key 和模型 |
+
+详细模块边界见 [系统架构说明](docs/architecture.md)。
+
+## 本地启动
+
+当前主线是本地直接启动，不依赖 Docker。
+
+### 环境要求
+
+- Python 3.13
+- Node.js 22
+- npm
+- 至少一个已配置的 OpenAI 兼容模型端点
+
+### 1. 创建根目录环境变量
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑根目录 `.env`，填写实际使用档位对应的 API Key。`.env` 已被 Git 忽略，禁止提交真实密钥。
+
+### 2. 启动后端
+
+```powershell
 cd server
 python -m venv .venv
-# Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env          # 填入你的百炼 API Key
-uvicorn main:app --reload --port 8020
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8020
 ```
 
-后端启动后：Swagger 文档 http://localhost:8020/docs ，健康检查 http://localhost:8020/health
+- API：`http://127.0.0.1:8020`
+- Swagger：`http://127.0.0.1:8020/docs`
+- 健康检查：`http://127.0.0.1:8020/health`
 
-**2. 前端**（`/api` 代理默认值已设为 `http://localhost:8020`，直接启动即可；如需指向其它端口，运行前设 `VITE_PROXY_TARGET` 环境变量）
+后端始终从项目根目录读取 `.env`。数据库初始化和 Alembic 增量升级在应用启动时执行。
 
-```bash
+### 3. 启动前端
+
+新开一个 PowerShell：
+
+```powershell
 cd app
 npm install
-npm run dev   # http://127.0.0.1:5173
+npm run dev
 ```
 
-> 端口说明：本项目默认后端 8000，本机 8000 已被其它进程占用，故演示用 8020，且 `app/vite.config.ts` 里 `proxyTarget` 默认值已改为 `http://localhost:8020`。若换到 8000 空闲的机器，把该默认值改回 `http://localhost:8000`、或启动前设置 `VITE_PROXY_TARGET=http://localhost:8000` 即可。
+打开 `http://127.0.0.1:5173`。Vite 默认将 `/api` 和 `/health` 代理到 `http://127.0.0.1:8020`；需要更换后端地址时设置 `VITE_PROXY_TARGET`。
 
-### 方式二：Docker Compose 一键启动
+## 模型与 OCR 配置
 
-```bash
-export DASHSCOPE_API_KEY=sk-你的Key       # Windows PowerShell: $env:DASHSCOPE_API_KEY="sk-..."
-docker compose up --build
+完整字段、默认值和注释以根目录 [.env.example](.env.example) 为唯一示例真源。
+
+### 模型档位
+
+| 前缀 | 用途 |
+| --- | --- |
+| `LLM_FAST_*` | 简历解析、岗位解析和基础匹配 |
+| `LLM_REASONING_*` | 深度匹配与联网研究 |
+| `LLM_REPORT_*` | 深度报告 |
+| `LLM_VISION_*` | 多模态 OCR 兜底 |
+| `LLM_OCR_*` | OCR 专用模型档位 |
+| `LLM_FALLBACK_*` | 主模型调用失败后的模型回退 |
+
+每个档位都支持独立的 `PROVIDER`、`BASE_URL`、`API_KEY` 和 `MODEL`。未单独配置时回退到全局 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`。
+
+### 并发与上限
+
+| 变量 | 作用 |
+| --- | --- |
+| `JOB_AGENT_CONCURRENCY` | 岗位结构化并发数 |
+| `MATCH_AGENT_CONCURRENCY` | 岗位匹配并发数 |
+| `REPORT_AGENT_CONCURRENCY` | 报告生成并发数 |
+| `FULL_MODE_LIMIT` | 单次深度岗位上限；`0` 表示不限制数量 |
+| `DEEP_RESEARCH_MAX_ITEMS` | 单个深度任务最多生成的联网查询数 |
+| `REPORT_HISTORY_LIMIT` | 历史报告保留数量 |
+
+并发数由后端统一管理，前端不允许用户临时修改。
+
+### OCR 凭证与限流
+
+| 变量 | 作用 |
+| --- | --- |
+| `TENCENT_OCR_SECRET_ID` / `TENCENT_OCR_SECRET_KEY` | 腾讯 OCR 凭证 |
+| `BAIDU_OCR_APP_ID` / `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` | 百度 OCR 凭证 |
+| `TENCENT_OCR_CONCURRENCY` / `TENCENT_OCR_RATE_PER_SEC` | 腾讯 OCR 并发和速率上限 |
+| `BAIDU_OCR_CONCURRENCY` / `BAIDU_OCR_RATE_PER_SEC` | 百度 OCR 并发和速率上限 |
+| `VISION_OCR_CONCURRENCY` | 百炼视觉兜底并发数 |
+
+## 主要 API
+
+| 资源 | 主要接口 |
+| --- | --- |
+| 简历 | `/api/resumes/upload`、`/parse`、`/import-images`、`/{id}/profile` |
+| 岗位 | `/api/jobs/import-text`、`/import-file`、`/import-url`、`/import-images`、`/{id}/analyze` |
+| 工作流 | `/api/agents/run`、`/tasks/{task_id}`、`/tasks/{task_id}/steps`、`/tasks/{task_id}/abort` |
+| 匹配 | `/api/match/results`、`/results/{id}`、`/results/retry`、`/item-runs` |
+| 报告 | `/api/reports/generate-batch`、`/tasks`、`/{id}`、`/{id}/markdown`、`/{id}/excel` |
+| 系统 | `/health`、`/api/test-llm` |
+
+请求和响应合同以 Swagger 为准。
+
+## 测试与验收
+
+后端：
+
+```powershell
+.\server\.venv\Scripts\python.exe -m pytest server -q -p no:cacheprovider
+.\server\.venv\Scripts\python.exe -m compileall -q server
 ```
 
-- 前端：http://localhost:8080
-- 后端：http://localhost:8000/docs
+前端：
 
-## 🔑 环境变量（server/.env）
+```powershell
+cd app
+npm run build
+```
 
-| 变量 | 说明 | 默认值 |
-| --- | --- | --- |
-| `DASHSCOPE_API_KEY` | 阿里云百炼 API Key（**必填**） | — |
-| `LLM_BASE_URL` | OpenAI 兼容端点 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `LLM_MODEL` | 默认模型（档位未单独配置时的回退值） | `qwen-plus`（可切 `qwen-max` / `qwen3.7-plus`） |
-| `LLM_FAST_MODEL` | 快速低成本档（Resume / Job / Report Agent） | 留空则回退 `LLM_MODEL` |
-| `LLM_REASONING_MODEL` | 强推理档（Match Agent） | 留空则回退 `LLM_MODEL` |
-| `LLM_VISION_MODEL` | 多模态兜底档（预留，当前未启用） | 留空则回退 `LLM_MODEL` |
-| `LLM_FALLBACK_MODEL` | 故障切换档（主模型持续失败时重试一次） | 留空则关闭兜底 |
-| `LLM_TIMEOUT` | 单次 LLM 调用超时（秒） | `120` |
-| `LLM_TEMPERATURE` | 采样温度 | `0.2` |
-| `DATABASE_URL` | 数据库连接 | `sqlite:///./internscout.db` |
-| `CORS_ORIGINS` | 允许跨域来源 | `*` |
-| `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` | 百度 OCR 凭证（截图导入用） | — |
-| `OCR_PROVIDER` | OCR 服务商：`tencent`（默认，10 QPS）/ `baidu`（~2 QPS） | `tencent` |
-| `TENCENT_OCR_SECRET_ID` / `TENCENT_OCR_SECRET_KEY` | 腾讯云 OCR 凭证（`OCR_PROVIDER=tencent` 时启用） | — |
-| `FULL_MODE_LIMIT` | 单次任务深度分析岗位上限 | `10` |
+真实模型端到端验收会写入当前数据库，需要先启动后端并配置有效 Key：
 
-> 获取 Key：登录 [阿里云百炼控制台](https://bailian.console.aliyun.com/) → API-KEY → 创建。本项目为纯 LLM 实现，未配置 Key 时相关接口会明确报错。
-> OCR 凭证：百度 https://console.bce.baidu.com/qianjin/aim/create ；腾讯云 https://console.cloud.tencent.com/cam/capi 。`server/.env.example` 为纯占位模板，不含真实密钥。
+```powershell
+cd server
+.\.venv\Scripts\python.exe e2e_test.py
+```
 
-## 📚 主要接口
+## 项目结构
 
 ```text
-# 简历
-POST /api/resumes/upload | /api/resumes/parse
-GET  /api/resumes[/{id}]        PUT /api/resumes/{id}/profile
-# 岗位
-POST /api/jobs/import-text | /api/jobs/import-file | /api/jobs/import-images
-GET  /api/jobs[/{id}]           POST /api/jobs/{id}/analyze
-PUT  /api/jobs/{id}/analyze-mode  GET /api/jobs/full-mode/count
-# 匹配
-GET  /api/match/results[/{id}]
-# Agent 工作流
-POST /api/agents/run            GET /api/agents/tasks/{task_id}[/steps]
-# 报告
-GET  /api/reports[/{id}]        GET /api/reports/{id}/markdown | /excel
-# 系统
-GET  /health                    POST /api/test-llm
+.
+├─ app/                         Vue 3 前端
+├─ server/
+│  ├─ routers/                  HTTP 接口适配层
+│  ├─ schemas/                  请求、响应与结构化输出合同
+│  ├─ services/                 OCR、解析、匹配、联网和报告核心逻辑
+│  ├─ models/                   SQLAlchemy 数据模型
+│  ├─ alembic/                  数据库迁移
+│  ├─ sample_data/              端到端验收样例
+│  └─ main.py                   FastAPI 入口
+├─ docs/
+│  ├─ architecture.md           架构说明
+│  └─ images/readme/            README 截图与拍摄规范
+├─ .env.example                 环境变量示例真源
+└─ README.md
 ```
 
-## 🧪 示例数据
+## 数据与安全
 
-`server/sample_data/`：
-- `sample_resume.md`：大三 AI 专业示例简历（羽智选 RAG 项目）
-- `sample_jd.txt`：AI Agent 应用开发实习生 JD
-- `sample_jobs.csv` / `sample_jobs.xlsx`：5 条含高/中/低匹配与风险岗位的示例表格
+- `.env`、SQLite 数据库、构建产物、运行输出和依赖目录不会提交 Git。
+- 不要在截图、日志、Issue 或报告中暴露 API Key、手机号、邮箱和身份证明。
+- 本地数据库包含简历、岗位、匹配结果和报告，不能当作缓存随意删除。
+- 招聘网站可能存在登录、验证码和反爬限制。智联招聘链接导入相对稳定；其他站点优先使用粘贴 JD 或截图 OCR。
 
-## 🗂️ 目录结构
+---
 
-```text
-internscout/
-├── server/           # FastAPI + LangGraph 后端
-│   ├── models/ schemas/ routers/ services/ prompts/ sample_data/
-│   ├── main.py config.py database.py requirements.txt .env.example
-├── app/              # Vue3 + Vite + Element Plus 前端
-│   └── src/{router,api,stores,views,components}
-├── docs/             # 架构图与工作流说明
-├── Dockerfile.server Dockerfile.app docker-compose.yml
-└── README.md
-```
+<div align="center">
 
-## 📌 最小可运行版本
+JobScout 的目标不是替用户做决定，而是让每一次投递都有证据、有优先级、有下一步行动。
 
-上传简历 → 导入岗位 → 一键分析 → 自动执行 4 Agent（过程可视）→ 输出简历画像、岗位结构化分析、匹配评分、推荐等级、投递建议与面试准备。
+</div>

@@ -1,9 +1,9 @@
-﻿"""Core matching flow for a single job item."""
+"""Core matching flow for a single job item."""
 from __future__ import annotations
 
 import hashlib
 
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from config import get_settings
 from database import SessionLocal
@@ -50,6 +50,7 @@ def run_single_match(
     *,
     tier: str = "deep",
     prompt_version: str = match_agent.PROMPT_VERSION,
+    research_callback: Callable[[str, dict], None] | None = None,
 ) -> MatchOutcome:
     """Run one match request for a single job. quick uses the fast model, deep uses the reasoning model."""
     settings = get_settings()
@@ -72,12 +73,16 @@ def run_single_match(
     research_context = web_research_service.fetch_research_context(
         job_profile,
         plan=research_plan,
+        on_event=research_callback,
     )
     research_metadata = ResearchMetadata(
         status=research_context.status,
         attempted=research_context.attempted,
         queries=research_context.queries,
         source_notes=research_context.source_notes,
+        sources=research_context.sources,
+        provider=research_context.provider,
+        verifiable=research_context.verifiable,
         reason=research_context.reason,
         error=research_context.error,
     )
@@ -122,7 +127,7 @@ def run_single_match(
             True,
         )
 
-    # 缂撳瓨鍛戒腑锛氱浉鍚?绠€鍘?宀椾綅+妯″瀷+妯″紡+Prompt鐗堟湰 鏃惰烦杩?LLM
+    # 缓存键覆盖简历、岗位、模型、模式和提示词版本。
     db = SessionLocal()
     try:
         row = (
@@ -202,13 +207,13 @@ def persist_match_row(
         row.cache_hit = cache_hit
         if match is not None:
             if match_mode == "deep":
-                # deep 鎴愬姛锛氫繚鐣?quick 鍒嗘暟锛岃褰?deep 鍒嗘暟锛屾渶缁堝垎鏁扮敤 deep 瑕嗙洊
+                # 深度分析成功时保留快速分，并以深度分作为最终分。
                 row.quick_score = row.quick_score or row.score
                 row.deep_score = match.score
                 row.partial_success = False
                 row.deep_error_message = ""
             else:
-                # quick 鎴愬姛锛氳褰?quick 鍒嗘暟
+                # 快速分析成功时记录快速分。
                 row.quick_score = match.score
                 row.partial_success = False
                 row.deep_error_message = ""

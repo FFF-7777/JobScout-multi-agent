@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class JobProfile(BaseModel):
@@ -42,6 +42,8 @@ class JobImportUrlRequest(BaseModel):
 
 
 class JobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     source: str
     company_name: str
@@ -58,10 +60,7 @@ class JobOut(BaseModel):
     analyze_mode: str = "summary"
     created_at: datetime | None = None
     analysis: dict | None = None
-
-    class Config:
-        from_attributes = True
-
+    ocr_metadata: dict | None = None
 
 class ImportImageFailed(BaseModel):
     """单张图片识别失败的原因。"""

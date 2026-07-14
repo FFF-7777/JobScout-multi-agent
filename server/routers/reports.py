@@ -356,14 +356,18 @@ def _run_report_task(task_id: str, match_result_ids: list[int], mode: str) -> No
 
     def _deep_worker(p):
         key = _report_key(p, model, mode)
-        if _report_cache_hit(p["result_id"], key):
-            return p, None, key, True
+        # 深度报告每次生成都必须先尝试实时联网，不能用旧缓存绕过本次研究。
         rep = report_agent.run(
             p["resume_profile"],
             p["job_profile"],
             p["match"],
             resume_text=p["resume_text"][:8000] if p["resume_text"] else None,
             model_role="report",
+        )
+        key = _report_key(
+            {**p, "match": p["match"].model_copy(update={"research_metadata": rep.research_metadata})},
+            model,
+            mode,
         )
         return p, rep, key, False
 
@@ -656,7 +660,7 @@ def download_markdown(report_id: int, db: Session = Depends(get_db)):
     report = db.get(Report, report_id)
     if report is None:
         raise HTTPException(404, "报告不存在")
-    filename = f"internscout_report_{report_id}.md"
+    filename = f"jobscout_report_{report_id}.md"
     return Response(
         content=report.markdown_content,
         media_type="text/markdown; charset=utf-8",
@@ -697,7 +701,7 @@ def download_excel(report_id: int, db: Session = Depends(get_db)):
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="岗位匹配")
     buf.seek(0)
-    filename = f"internscout_jobs_{report_id}.xlsx"
+    filename = f"jobscout_jobs_{report_id}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -517,6 +517,7 @@ function startAnalyze() {
             <el-option label="快速分析" value="summary" />
             <el-option label="深度分析" value="full" />
           </el-select>
+          <el-tag type="success" effect="plain">深度分析已接入联网</el-tag>
           <el-button :disabled="!hasSelected" :loading="loading" @click="reanalyzeSelected">
             批量重新解析
           </el-button>

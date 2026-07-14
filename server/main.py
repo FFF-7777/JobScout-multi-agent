@@ -116,6 +116,7 @@ def health():
             "model": fast_info["model"],
             "provider": fast_info["provider"],
             "enable_thinking": fast_info["enable_thinking"],
+            "network_access": "disabled",
             "configured": fast_info["configured"],
         },
         {
@@ -124,6 +125,7 @@ def health():
             "model": fast_info["model"],
             "provider": fast_info["provider"],
             "enable_thinking": fast_info["enable_thinking"],
+            "network_access": "disabled",
             "configured": fast_info["configured"],
         },
         {
@@ -141,6 +143,7 @@ def health():
                 else reasoning_info["provider"]
             ),
             "enable_thinking": reasoning_info["enable_thinking"],
+            "network_access": "deep_forced_with_model_fallback",
             "configured": bool(fast_info["configured"] and reasoning_info["configured"])
             if s.match_two_tier
             else reasoning_info["configured"],
@@ -151,6 +154,7 @@ def health():
             "model": report_info["model"],
             "provider": report_info["provider"],
             "enable_thinking": report_info["enable_thinking"],
+            "network_access": "forced_with_model_fallback",
             "configured": report_info["configured"],
         },
     ]
@@ -161,6 +165,11 @@ def health():
         "llm_base_url": s.llm_base_url,
         "llm_timeout": s.llm_timeout,
         "agents": agents,
+        "network_capabilities": {
+            "quick_analysis": "disabled",
+            "deep_analysis": "forced_with_model_fallback",
+            "deep_report": "forced_with_model_fallback",
+        },
     }
 
 

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field
 
-from pydantic import BaseModel, Field
+from schemas.match import ResearchMetadata
 
 
 class InterviewGuide(BaseModel):
@@ -32,9 +33,12 @@ class JobReport(BaseModel):
     improvement_tips: list[str] = Field(default_factory=list)
     questions_to_ask: list[str] = Field(default_factory=list)
     action_plan: list[str] = Field(default_factory=list)
+    research_metadata: ResearchMetadata = Field(default_factory=ResearchMetadata)
 
 
 class AgentRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     task_id: str
     agent_name: str
@@ -42,6 +46,7 @@ class AgentRunOut(BaseModel):
     status: str
     summary: str
     progress: int = 0
+    input_json: dict | None = None
     output_json: dict | None = None
     error_message: str = ""
     started_at: datetime | None = None
@@ -55,10 +60,6 @@ class AgentRunOut(BaseModel):
     failed_items: int = 0
     in_flight_items: list | None = None
 
-    class Config:
-        from_attributes = True
-
-
 class WorkflowRunRequest(BaseModel):
     resume_id: int
     job_ids: list[int] = Field(default_factory=list)
@@ -71,6 +72,8 @@ class WorkflowTaskOut(BaseModel):
 
 
 class ReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     resume_id: int
     task_id: str | None = None
@@ -79,6 +82,3 @@ class ReportOut(BaseModel):
     summary: str
     markdown_content: str
     created_at: datetime | None = None
-
-    class Config:
-        from_attributes = True

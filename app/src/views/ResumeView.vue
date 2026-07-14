@@ -17,6 +17,12 @@ const resumeList = ref<ResumeSummary[]>([]);
 
 const uploadProgress = ref(0);
 const uploadPhase = ref<"idle" | "uploading" | "ocr" | "parsing" | "done">("idle");
+const resumeOcrProviders = computed(() => {
+  const providers = (resume.value?.ocr_metadata?.pages || []).flatMap((page: any) =>
+    (page.attempts || []).map((item: any) => item.provider)
+  );
+  return Array.from(new Set(providers)).join(" → ");
+});
 
 const pendingImageFiles = ref<File[]>([]);
 const pendingImagePreviews = ref<string[]>([]);
@@ -321,6 +327,11 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="profile && resume" class="card">
+          <div v-if="resume.ocr_metadata?.pages?.length" class="ocr-audit-summary">
+            OCR 审计：{{ resume.ocr_metadata.pages.length }} 页 ·
+            识别链路
+            {{ resumeOcrProviders }}
+          </div>
           <div class="section-h">候选人姓名</div>
           <el-input v-model="profile.name" style="max-width: 320px" />
 
@@ -377,6 +388,7 @@ onBeforeUnmount(() => {
   gap: 18px;
   align-items: start;
 }
+.ocr-audit-summary { margin-bottom: 14px; padding: 10px 12px; border: 1px solid #dfe7f5; border-radius: 10px; background: #f7f9fd; color: #60708c; font-size: 12px; }
 
 .list-card {
   padding: 14px;

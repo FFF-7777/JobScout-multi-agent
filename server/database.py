@@ -71,11 +71,13 @@ def init_db() -> None:
         _migrate_jobs_analyze_mode()
         _migrate_jobs_ocr_fields()
         _migrate_resume_cache()
+        _migrate_ocr_audit_fields()
         _migrate_agent_runs_progress_fields()
         _migrate_match_results_cache()
         _migrate_match_results_status()
         _migrate_match_results_deep()
         _migrate_agent_item_runs()
+        _migrate_agent_item_run_observability()
         _migrate_agent_item_runs_unique()
         _migrate_job_parse_tasks()
         _migrate_job_reports()
@@ -199,6 +201,39 @@ def _migrate_resume_cache() -> None:
         "content_hash": "ALTER TABLE resumes ADD COLUMN content_hash VARCHAR(32) DEFAULT ''",
         "parsed_at": "ALTER TABLE resumes ADD COLUMN parsed_at TIMESTAMP",
         "profile_version": "ALTER TABLE resumes ADD COLUMN profile_version INTEGER DEFAULT 0",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in columns:
+                conn.execute(text(ddl))
+
+
+def _migrate_ocr_audit_fields() -> None:
+    """为岗位和简历补 OCR 降级链路审计 JSON。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    for table in ("jobs", "resumes"):
+        if table not in tables:
+            continue
+        columns = {c["name"] for c in inspector.get_columns(table)}
+        if "ocr_metadata" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN ocr_metadata JSON"))
+
+
+def _migrate_agent_item_run_observability() -> None:
+    """为单岗位执行记录补实时阶段与研究元数据。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "agent_item_runs" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("agent_item_runs")}
+    needed = {
+        "phase": "ALTER TABLE agent_item_runs ADD COLUMN phase VARCHAR(32) DEFAULT ''",
+        "metadata_json": "ALTER TABLE agent_item_runs ADD COLUMN metadata_json JSON",
     }
     with engine.begin() as conn:
         for col, ddl in needed.items():

@@ -208,6 +208,8 @@ def get_item_runs(task_id: str, agent_name: str | None = None):
             "item_label": r.item_label,
             "status": r.status,
             "error_message": r.error_message,
+            "phase": r.phase,
+            "metadata_json": r.metadata_json,
             "slot": r.slot,
             "started_at": r.started_at.isoformat() if r.started_at else None,
             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
